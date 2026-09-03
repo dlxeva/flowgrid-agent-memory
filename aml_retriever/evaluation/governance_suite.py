@@ -1679,6 +1679,14 @@ def _nested_metric(value: Mapping[str, Any], path: str) -> float:
 def verify_baseline_provenance(
     baseline: Mapping[str, Any], *, repo_root: Path | None = None
 ) -> dict[str, Any]:
+    """Verify the reviewed baseline without requiring predecessor Git history.
+
+    The canonical baseline digest binds its source commit, source tree, dataset,
+    stage, and clean-snapshot metadata.  A development checkout that still has
+    the predecessor object performs the stronger local Git object check.  A
+    clean-history public clone reports the reviewed embedded attestation
+    explicitly instead of failing or pretending the old object is present.
+    """
     if baseline.get("schema") != BASELINE_SCHEMA:
         raise EvaluationError("unsupported legacy baseline schema")
     if canonical_sha256(baseline) != LEGACY_BASELINE_CANONICAL_SHA256:
@@ -1710,14 +1718,24 @@ def verify_baseline_provenance(
     if baseline.get("stage") != LEGACY_BASELINE_STAGE:
         raise EvaluationError("legacy baseline stage is not approved")
     root = (repo_root or REPO_ROOT).resolve()
+    commit_object_verified = False
     try:
         _git("cat-file", "-e", f"{commit}^{{commit}}", repo_root=root)
         observed_tree = _git("show", "-s", "--format=%T", commit, repo_root=root)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise EvaluationError("legacy baseline commit cannot be verified locally") from exc
-    if observed_tree != tree:
-        raise EvaluationError("legacy baseline tree does not match its commit")
-    return {"commit": commit, "tree": tree, "clean_snapshot": True}
+    except (OSError, subprocess.SubprocessError):
+        verification = "reviewed_embedded_attestation"
+    else:
+        if observed_tree != tree:
+            raise EvaluationError("legacy baseline tree does not match its commit")
+        commit_object_verified = True
+        verification = "local_git_object"
+    return {
+        "commit": commit,
+        "tree": tree,
+        "clean_snapshot": True,
+        "commit_object_verified": commit_object_verified,
+        "verification": verification,
+    }
 
 
 def _op_legacy_floor(fixture: Mapping[str, Any], runtime: EvaluationRuntime) -> dict:

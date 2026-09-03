@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -266,10 +267,24 @@ class TestBaselineProvenance(unittest.TestCase):
             verified["commit"], "cdae7dbd38d73eda33793b30017559bdfb75eff5"
         )
         self.assertTrue(verified["clean_snapshot"])
+        self.assertIn(
+            verified["verification"],
+            {"local_git_object", "reviewed_embedded_attestation"},
+        )
         self.assertEqual(
             self.baseline["dataset"]["canonical_dump_sha256"],
             "245752a7f0f076207de85ef17b5c6af9fb07937893b9c073968c55876f523098",
         )
+
+    def test_clean_history_clone_uses_reviewed_embedded_attestation(self):
+        with mock.patch.object(
+            suite,
+            "_git",
+            side_effect=subprocess.CalledProcessError(128, ["git", "cat-file"]),
+        ):
+            verified = suite.verify_baseline_provenance(self.baseline)
+        self.assertFalse(verified["commit_object_verified"])
+        self.assertEqual(verified["verification"], "reviewed_embedded_attestation")
 
     def test_unverified_or_dirty_baseline_metadata_fails_closed(self):
         for field, value in (("verified", False),):

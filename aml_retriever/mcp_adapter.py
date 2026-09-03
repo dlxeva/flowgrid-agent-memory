@@ -77,6 +77,15 @@ def _sdk_error(code: str):
     )
 
 
+def _safe_core_result(operation):
+    """Keep unexpected core exceptions below the SDK logging boundary."""
+
+    try:
+        return operation()
+    except Exception:
+        return {"status": "error", "error": {"code": "operation_failed"}}
+
+
 class _SafeToolBoundary:
     """Official ServerMiddleware that rejects reflective/extra tool input.
 
@@ -210,12 +219,14 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         session_id: str | None = None,
         scope: dict[str, str] | None = None,
     ) -> dict[str, object]:
-        return core.memory_ingest_events(
-            request_id=request_id,
-            user_id=user_id,
-            messages=messages,
-            session_id=session_id,
-            scope=scope,
+        return _safe_core_result(
+            lambda: core.memory_ingest_events(
+                request_id=request_id,
+                user_id=user_id,
+                messages=messages,
+                session_id=session_id,
+                scope=scope,
+            )
         )
 
     @server.tool(
@@ -229,11 +240,13 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         idempotency_key: str,
         scope: dict[str, str] | None = None,
     ) -> dict[str, object]:
-        return core.memory_extract_candidates(
-            user_id=user_id,
-            raw_event_ids=raw_event_ids,
-            idempotency_key=idempotency_key,
-            scope=scope,
+        return _safe_core_result(
+            lambda: core.memory_extract_candidates(
+                user_id=user_id,
+                raw_event_ids=raw_event_ids,
+                idempotency_key=idempotency_key,
+                scope=scope,
+            )
         )
 
     @server.tool(
@@ -249,13 +262,15 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         max_records: int = 100,
         max_chars: int = 32_768,
     ) -> dict[str, object]:
-        return core.memory_query_current(
-            user_id=user_id,
-            memory_key=memory_key,
-            query=query,
-            scope=scope,
-            max_records=max_records,
-            max_chars=max_chars,
+        return _safe_core_result(
+            lambda: core.memory_query_current(
+                user_id=user_id,
+                memory_key=memory_key,
+                query=query,
+                scope=scope,
+                max_records=max_records,
+                max_chars=max_chars,
+            )
         )
 
     @server.tool(
@@ -272,14 +287,16 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         max_chars: int = 32_768,
         max_tokens: int | None = None,
     ) -> dict[str, object]:
-        return core.memory_compile_context(
-            user_id=user_id,
-            memory_key=memory_key,
-            query=query,
-            scope=scope,
-            max_records=max_records,
-            max_chars=max_chars,
-            max_tokens=max_tokens,
+        return _safe_core_result(
+            lambda: core.memory_compile_context(
+                user_id=user_id,
+                memory_key=memory_key,
+                query=query,
+                scope=scope,
+                max_records=max_records,
+                max_chars=max_chars,
+                max_tokens=max_tokens,
+            )
         )
 
     return server
