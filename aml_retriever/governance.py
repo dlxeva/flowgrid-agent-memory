@@ -784,20 +784,38 @@ def transition_memory_record(
         raise GovernanceError(
             "confirmed truth and governance terminal states require user/owner/policy authority"
         )
+
+    confirmation_sources: list[sqlite3.Row] = []
+    if target_status == "confirmed":
+        source_ids = _parse_json_list(row["source_event_ids"])
+        if not source_ids:
+            raise GovernanceError("confirmed memory requires source evidence")
+        if len(source_ids) != len(set(source_ids)):
+            raise GovernanceError(
+                "confirmed memory source evidence must not contain duplicates"
+            )
+        placeholders = ",".join("?" * len(source_ids))
+        confirmation_sources = con.execute(
+            f"SELECT id,user_id,authority FROM raw_events WHERE id IN ({placeholders})",
+            tuple(source_ids),
+        ).fetchall()
+        found_ids = {source["id"] for source in confirmation_sources}
+        missing = [source_id for source_id in source_ids if source_id not in found_ids]
+        if missing:
+            raise GovernanceError(
+                f"confirmed memory source evidence is missing: {', '.join(missing)}"
+            )
+        if any(source["user_id"] != row["user_id"] for source in confirmation_sources):
+            raise GovernanceError(
+                "confirmed memory source evidence must belong to the same user"
+            )
+
     if target_status == "confirmed" and row["memory_type"] == "preference":
         if row["subject"] != row["user_id"] or row["authority"] != "user":
             raise GovernanceError(
                 "confirmed preference requires the user as subject and direct-user authority"
             )
-        source_ids = _parse_json_list(row["source_event_ids"])
-        if not source_ids:
-            raise GovernanceError("confirmed preference requires direct-user source evidence")
-        placeholders = ",".join("?" * len(source_ids))
-        sources = con.execute(
-            f"SELECT authority FROM raw_events WHERE id IN ({placeholders})",
-            tuple(source_ids),
-        ).fetchall()
-        if len(sources) != len(source_ids) or any(source["authority"] != "user" for source in sources):
+        if any(source["authority"] != "user" for source in confirmation_sources):
             raise GovernanceError(
                 "assistant, third-party, or inferred preference evidence cannot be promoted"
             )
