@@ -1,0 +1,343 @@
+{
+  "schema": "flowgrid.agent-memory.governance-eval.manifest/v1",
+  "suite": "governance-v1",
+  "profiles": {
+    "quick": {
+      "required_surfaces": [
+        "governed_core",
+        "context_compiler",
+        "official_add_search"
+      ],
+      "required_capabilities": [
+        "FLG.raw_immutable",
+        "FLG.authority_gate",
+        "FLG.traceability",
+        "D1",
+        "D3",
+        "E1",
+        "E2",
+        "H1",
+        "H2",
+        "proxy.A2",
+        "proxy.B2",
+        "proxy.B3",
+        "proxy.G1",
+        "proxy.G3",
+        "proxy.G5",
+        "legacy.v11_floor"
+      ],
+      "observed_capabilities": [
+        "official.artifact"
+      ]
+    },
+    "product": {
+      "required_surfaces": [
+        "governed_core",
+        "context_compiler",
+        "official_add_search",
+        "governed_rest",
+        "mcp"
+      ],
+      "required_capabilities": [
+        "FLG.raw_immutable",
+        "FLG.authority_gate",
+        "FLG.traceability",
+        "D1",
+        "D3",
+        "E1",
+        "E2",
+        "H1",
+        "H2",
+        "proxy.A2",
+        "proxy.B2",
+        "proxy.B3",
+        "proxy.G1",
+        "proxy.G3",
+        "proxy.G5",
+        "legacy.v11_floor"
+      ],
+      "observed_capabilities": [
+        "official.artifact"
+      ]
+    }
+  },
+  "surfaces": {
+    "governed_core": {
+      "operator": "python_surface",
+      "module": "aml_retriever.api",
+      "attributes": [
+        "MemoryService.search_governed",
+        "MemoryService.propose_memory",
+        "MemoryService.transition_memory"
+      ]
+    },
+    "context_compiler": {
+      "operator": "python_surface",
+      "module": "aml_retriever.api",
+      "attributes": [
+        "MemoryService.compile_context",
+        "AccessContext",
+        "DisclosurePolicy",
+        "ContextPack"
+      ]
+    },
+    "official_add_search": {
+      "operator": "python_surface",
+      "module": "aml_retriever.api",
+      "attributes": [
+        "MemoryService.official_add",
+        "MemoryService.official_search"
+      ]
+    },
+    "governed_rest": {
+      "operator": "python_surface",
+      "module": "aml_retriever.rest_v1",
+      "attributes": [
+        "GovernedRestAdapter"
+      ]
+    },
+    "mcp": {
+      "operator": "python_surface",
+      "module": "aml_retriever.mcp_adapter",
+      "attributes": [
+        "create_mcp_server"
+      ]
+    }
+  },
+  "capabilities": {
+    "FLG.raw_immutable": {
+      "layer": "core_invariant",
+      "operator": "raw_immutable",
+      "fixture": "raw_immutable"
+    },
+    "FLG.authority_gate": {
+      "layer": "core_invariant",
+      "operator": "authority_gate",
+      "fixture": "authority_gate"
+    },
+    "FLG.traceability": {
+      "layer": "core_invariant",
+      "operator": "traceability",
+      "fixture": "traceability"
+    },
+    "D1": {
+      "layer": "core_invariant",
+      "operator": "current_replacement",
+      "fixture": "current_replacement"
+    },
+    "D3": {
+      "layer": "core_invariant",
+      "operator": "deletion_suppression",
+      "fixture": "deletion_suppression"
+    },
+    "E1": {
+      "layer": "core_invariant",
+      "operator": "direct_preference",
+      "fixture": "direct_preference"
+    },
+    "E2": {
+      "layer": "core_invariant",
+      "operator": "anti_stereotype",
+      "fixture": "anti_stereotype"
+    },
+    "H1": {
+      "layer": "core_invariant",
+      "operator": "unknown_and_owner_gate",
+      "fixture": "unknown_and_owner_gate"
+    },
+    "H2": {
+      "layer": "core_invariant",
+      "operator": "minimal_disclosure",
+      "fixture": "minimal_disclosure"
+    },
+    "proxy.A2": {
+      "layer": "local_e2e_proxy",
+      "operator": "proxy_attribution",
+      "fixture": "proxy_attribution"
+    },
+    "proxy.B2": {
+      "layer": "local_e2e_proxy",
+      "operator": "proxy_three_segment_chain",
+      "fixture": "proxy_three_segment_chain"
+    },
+    "proxy.B3": {
+      "layer": "local_e2e_proxy",
+      "operator": "proxy_evidence_path",
+      "fixture": "proxy_evidence_path"
+    },
+    "proxy.G1": {
+      "layer": "local_e2e_proxy",
+      "operator": "proxy_rule_evidence",
+      "fixture": "proxy_rule_evidence"
+    },
+    "proxy.G3": {
+      "layer": "local_e2e_proxy",
+      "operator": "proxy_workflow_evidence",
+      "fixture": "proxy_workflow_evidence"
+    },
+    "proxy.G5": {
+      "layer": "local_e2e_proxy",
+      "operator": "proxy_wire_contract",
+      "fixture": "proxy_wire_contract"
+    },
+    "legacy.v11_floor": {
+      "layer": "local_e2e_proxy",
+      "operator": "legacy_floor",
+      "fixture": "legacy_floor"
+    },
+    "official.artifact": {
+      "layer": "official_aml",
+      "operator": "official_unverified",
+      "fixture": "official_artifact"
+    }
+  },
+  "fixtures": {
+    "raw_immutable": {
+      "alias": "raw-alpha",
+      "user": "eval-raw-user",
+      "session": "eval-raw-session",
+      "content": "RAW-ALPHA immutable source evidence",
+      "timestamp": 1700000000001
+    },
+    "authority_gate": {
+      "alias": "authority-alpha",
+      "user": "eval-authority-user",
+      "memory_key": "decision.launch",
+      "content": "AUTHORITY-ALPHA candidate direction",
+      "timestamp": 1700000000010
+    },
+    "traceability": {
+      "alias": "trace-alpha",
+      "user": "eval-trace-user",
+      "memory_key": "project.trace",
+      "content": "TRACE-ALPHA approved evidence",
+      "timestamp": 1700000000020
+    },
+    "current_replacement": {
+      "alias": "replacement-alpha",
+      "user": "eval-replacement-user",
+      "memory_key": "profile.city",
+      "old_content": "REPLACEMENT-OLD Hangzhou",
+      "new_content": "REPLACEMENT-NEW Shanghai",
+      "old_timestamp": 1700000000030,
+      "new_timestamp": 1700000000040
+    },
+    "deletion_suppression": {
+      "alias": "deletion-alpha",
+      "user": "eval-deletion-user",
+      "memory_key": "project.retired_direction",
+      "content": "DELETION-SECRET terminal memory must stay suppressed",
+      "timestamp": 1700000000050,
+      "rejected_key": "project.rejected_direction",
+      "rejected_content": "REJECTED-SECRET terminal memory must stay suppressed",
+      "rejected_timestamp": 1700000000051
+    },
+    "direct_preference": {
+      "alias": "preference-direct",
+      "user": "eval-preference-user",
+      "memory_key": "preference.review_tool",
+      "subject": "eval-preference-user",
+      "content": "I prefer Cedar for sample review",
+      "scope": {
+        "project": "evaluation"
+      },
+      "timestamp": 1700000000060
+    },
+    "anti_stereotype": {
+      "alias": "preference-inferred",
+      "user": "eval-stereotype-user",
+      "memory_key": "preference.review_tool",
+      "subject": "eval-stereotype-user",
+      "content": "The assistant assumes this user prefers Juniper",
+      "scope": {
+        "project": "evaluation"
+      },
+      "timestamp": 1700000000070
+    },
+    "unknown_and_owner_gate": {
+      "alias": "unknown-alpha",
+      "user": "eval-unknown-user",
+      "missing_key": "profile.missing",
+      "pending_key": "decision.pending",
+      "pending_content": "PENDING-OWNER-GATE requires explicit confirmation",
+      "timestamp": 1700000000080
+    },
+    "minimal_disclosure": {
+      "alias": "privacy-alpha",
+      "authorized_user": "eval-private-owner",
+      "unauthorized_user": "eval-private-outsider",
+      "memory_key": "private.note",
+      "secret_content": "PRIVATE-ALPHA never disclose across users",
+      "budget_content": "BUDGET-ALPHA complete atomic memory",
+      "timestamp": 1700000000090
+    },
+    "proxy_attribution": {
+      "alias": "proxy-a2",
+      "user": "eval-proxy-a2",
+      "message": "ATTRIBUTION-A2 Mira assigned the Atlas review to Rowan",
+      "query": "Who did Mira assign the Atlas review to?",
+      "expected": "Rowan",
+      "timestamp": 1700000000100
+    },
+    "proxy_three_segment_chain": {
+      "alias": "proxy-b2",
+      "user": "eval-proxy-b2",
+      "segments": [
+        "CHAIN-B2-1 Orchid requires Amber before review",
+        "CHAIN-B2-2 Amber unlocks Cobalt after validation",
+        "CHAIN-B2-3 Cobalt enables Northstar deployment"
+      ],
+      "query": "Trace Orchid through Amber and Cobalt to Northstar deployment",
+      "timestamp": 1700000000110
+    },
+    "proxy_evidence_path": {
+      "alias": "proxy-b3",
+      "user": "eval-proxy-b3",
+      "segments": [
+        "PATH-B3-1 source Delta supports checkpoint Echo",
+        "PATH-B3-2 checkpoint Echo supports conclusion Foxtrot",
+        "PATH-B3-3 conclusion Foxtrot closes the evidence path"
+      ],
+      "query": "Show the Delta Echo Foxtrot evidence path",
+      "timestamp": 1700000000120
+    },
+    "proxy_rule_evidence": {
+      "alias": "proxy-g1",
+      "user": "eval-proxy-g1",
+      "message": "RULE-G1 R-7 says unverified sources must leave the claim unknown",
+      "query": "What does rule R-7 say about unverified sources?",
+      "expected": "unknown",
+      "timestamp": 1700000000130
+    },
+    "proxy_workflow_evidence": {
+      "alias": "proxy-g3",
+      "user": "eval-proxy-g3",
+      "steps": [
+        "WORKFLOW-G3 Step 1 capture raw evidence",
+        "WORKFLOW-G3 Step 2 create a candidate",
+        "WORKFLOW-G3 Step 3 request owner confirmation"
+      ],
+      "query": "List the WORKFLOW-G3 raw evidence candidate owner confirmation steps",
+      "timestamp": 1700000000140
+    },
+    "proxy_wire_contract": {
+      "alias": "proxy-g5",
+      "request_id": "wire-g5-request",
+      "user": "eval-proxy-g5",
+      "session": "wire-g5-session",
+      "message": "WIRE-G5 immediate searchable contract evidence",
+      "query": "WIRE-G5 searchable contract",
+      "timestamp": 1700000000150,
+      "top_k": 100
+    },
+    "legacy_floor": {
+      "alias": "legacy-v11-small",
+      "baseline": "baselines/legacy_v11_small.json"
+    },
+    "official_artifact": {
+      "alias": "official-aml",
+      "artifact": null,
+      "reason": "no_verifiable_official_artifact"
+    }
+  }
+}

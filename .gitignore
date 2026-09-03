@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+data/
+.venv/
+venv/
+eval_out/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage*/
+htmlcov/
+
+# Local/editor state
+.idea/
+.vscode/
+
+# FlowGrid private project state
+.flg/
+.agents/
+.codex/
+PROJECT_MASTER.json
+ORCHESTRATION.json
+PROJECT.md
+FRAMING.md
+DECISIONS.md
+SNAPSHOT.md
+CONSTRAINTS.md
+PROGRESS.md
+GOAL_EVOLUTION.md
+ANCHORS.md
+RATIONALE_TRAIL.md
+LESSONS_LEARNED.md
+
+# Local credentials
+.env
+.env.*
+!.env.example

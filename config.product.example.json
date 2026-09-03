@@ -1,0 +1,37 @@
+{
+  "schema": "flowgrid.rest/v1",
+  "db_path": "/var/lib/flowgrid-memory/memory.db",
+  "bind": {
+    "host": "127.0.0.1",
+    "port": 8081
+  },
+  "auth": {
+    "mode": "bearer",
+    "token_env": "FLOWGRID_MEMORY_BEARER_TOKEN",
+    "principal": {
+      "principal_id": "replace-with-local-principal-id",
+      "authority": "owner",
+      "allowed_users": [
+        "replace-with-user-id"
+      ],
+      "scopes": {},
+      "permissions": [
+        "memory:write",
+        "memory:extract",
+        "memory:read",
+        "memory:audit",
+        "memory:transition"
+      ],
+      "purpose": "local memory administration",
+      "allowed_audit_purposes": [
+        "local memory administration"
+      ]
+    }
+  },
+  "erase": {
+    "enabled": false
+  },
+  "limits": {
+    "max_body_bytes": 1048576
+  }
+}

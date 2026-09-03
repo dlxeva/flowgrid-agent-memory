@@ -1,0 +1,63 @@
+{
+  "_comment": "AML Retriever 配置样例。用法：AML_CONFIG=config.example.json python3 -m aml_retriever.cli serve  —— 或 --config 传入。优先级：命令行 > 环境变量 > 本文件 > 内置默认。",
+
+  "db_path": "./aml.db",
+
+  "_comment_views": "视图构造参数，确定性且可配置。window_size=3/overlap=1 表示每 3 条消息一个滑窗、相邻窗重叠 1 条。",
+  "window_size": 3,
+  "window_overlap": 1,
+  "segment_max_messages": 12,
+  "segment_max_gap_seconds": 1800,
+
+  "_comment_search": "top_k_max=100 对齐官方正式评测口径；max_candidates 界定单次 Search 最坏代价。",
+  "top_k_default": 10,
+  "top_k_max": 100,
+  "max_candidates": 400,
+  "max_query_tokens": 64,
+  "message_slot_ratio": 0.5,
+
+  "_comment_rrf": "rrf_weight_lexical=0.1 是唯一「MRR 有增益且 Recall@20 不退化」的取值，见 docs/EVAL.md 附录 A。调高会用召回换排序。",
+  "rrf_k": 60,
+  "rrf_weight_feature": 1.0,
+  "rrf_weight_lexical": 0.1,
+
+  "recency_weight": 8.0,
+  "recency_weight_intent": 12.0,
+  "supersession_weight": 4.0,
+  "supersession_penalty": 1.0,
+  "supersession_min_overlap": 0.5,
+  "supersession_max_pairs": 40,
+  "preference_role_weight": 14.0,
+
+  "_comment_concurrency": "对齐官方披露：Add 64 workers / Search 32 workers。pool_size 为读连接池容量。",
+  "busy_timeout_ms": 10000,
+  "write_retries": 5,
+  "pool_size": 24,
+
+  "_comment_http": "官方明确请求/响应格式固定、不随 URL 路径变化，故三个路径均可改。auth_mode: none|bearer|token|x-api-key。生产切勿用 none。",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "auth_mode": "none",
+  "api_key": "",
+  "add_path": "/add",
+  "search_path": "/search",
+  "health_path": "/health",
+
+  "_comment_flags": "检索增强开关，每项可独立关闭做消融。v1.1 默认启用 supersession+update_guard 的受保护组合；preference_role_boost、temporal_intent 与 vector 仍默认关闭。",
+  "flags": {
+    "views": true,
+    "exact": true,
+    "datenum": true,
+    "entity": true,
+    "rerank": true,
+    "temporal_intent": false,
+    "rrf": true,
+    "dedup": true,
+    "use_options": true,
+    "exact_scan": false,
+    "vector": false,
+    "supersession": true,
+    "supersession_update_guard": true,
+    "preference_role_boost": false
+  }
+}

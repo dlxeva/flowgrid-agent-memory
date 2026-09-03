@@ -1,0 +1,96 @@
+{
+  "schema": "flowgrid.agent-memory.legacy-baseline/v1",
+  "baseline": "legacy-v11-small-mixed",
+  "verified": true,
+  "source": {
+    "commit": "cdae7dbd38d73eda33793b30017559bdfb75eff5",
+    "tree": "b893323a1e5f8e0860923b48a87d365a6100fe08",
+    "clean_snapshot": true,
+    "snapshot_method": "git_archive",
+    "network_used": false
+  },
+  "dataset": {
+    "suite": "v11",
+    "scale": "small",
+    "difficulty": "mixed",
+    "seed": 20260806,
+    "top_k": 100,
+    "canonical_dump_sha256": "245752a7f0f076207de85ef17b5c6af9fb07937893b9c073968c55876f523098"
+  },
+  "reproduction": {
+    "command": "python3 scripts/run_eval.py --scale small --difficulty mixed --suite v11 --seed 20260806 --top-k 100 --stages L9_guarded_supersession",
+    "working_copy": "git archive cdae7dbd38d73eda33793b30017559bdfb75eff5 extracted into a temporary directory"
+  },
+  "stage": "L9_guarded_supersession",
+  "metrics": {
+    "overall": {
+      "queries": 96,
+      "recall@20": 0.9844,
+      "recall@100": 1.0,
+      "mrr": 0.559,
+      "distractor_leak@10": 0.75
+    },
+    "by_kind": {
+      "direct_preference": {
+        "queries": 16,
+        "recall@20": 1.0,
+        "recall@100": 1.0,
+        "mrr": 0.5938
+      },
+      "governance_update_noise": {
+        "queries": 16,
+        "recall@20": 1.0,
+        "recall@100": 1.0,
+        "mrr": 0.5
+      },
+      "knowledge_update": {
+        "queries": 16,
+        "recall@20": 1.0,
+        "recall@100": 1.0,
+        "mrr": 0.5463
+      },
+      "multi_session": {
+        "queries": 16,
+        "recall@20": 0.9688,
+        "recall@100": 1.0,
+        "mrr": 0.5587
+      },
+      "single_hop": {
+        "queries": 16,
+        "recall@20": 1.0,
+        "recall@100": 1.0,
+        "mrr": 0.5677
+      },
+      "temporal": {
+        "queries": 16,
+        "recall@20": 0.9375,
+        "recall@100": 1.0,
+        "mrr": 0.5872
+      }
+    }
+  },
+  "floors": [
+    {"metric": "overall.recall@20", "operator": "gte", "value": 0.9844},
+    {"metric": "overall.recall@100", "operator": "gte", "value": 1.0},
+    {"metric": "overall.mrr", "operator": "gte", "value": 0.559},
+    {"metric": "overall.distractor_leak@10", "operator": "lte", "value": 0.75},
+    {"metric": "by_kind.direct_preference.recall@20", "operator": "gte", "value": 1.0},
+    {"metric": "by_kind.direct_preference.mrr", "operator": "gte", "value": 0.5938},
+    {"metric": "by_kind.governance_update_noise.recall@20", "operator": "gte", "value": 1.0},
+    {"metric": "by_kind.governance_update_noise.mrr", "operator": "gte", "value": 0.5},
+    {"metric": "by_kind.knowledge_update.recall@20", "operator": "gte", "value": 1.0},
+    {"metric": "by_kind.knowledge_update.mrr", "operator": "gte", "value": 0.5463},
+    {"metric": "by_kind.multi_session.recall@20", "operator": "gte", "value": 0.9688},
+    {"metric": "by_kind.multi_session.mrr", "operator": "gte", "value": 0.5587},
+    {"metric": "by_kind.single_hop.recall@20", "operator": "gte", "value": 1.0},
+    {"metric": "by_kind.single_hop.mrr", "operator": "gte", "value": 0.5677},
+    {"metric": "by_kind.temporal.recall@20", "operator": "gte", "value": 0.9375},
+    {"metric": "by_kind.temporal.mrr", "operator": "gte", "value": 0.5872}
+  ],
+  "excluded": [
+    "latency",
+    "wall_clock",
+    "temporary_paths",
+    "generated_at"
+  ]
+}

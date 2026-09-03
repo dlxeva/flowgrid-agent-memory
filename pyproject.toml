@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowgrid-agent-memory"
+dynamic = ["version"]
+description = "Evidence-first, governed local memory for AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "FlowGrid contributors"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/dlxeva/flowgrid-agent-memory"
+Repository = "https://github.com/dlxeva/flowgrid-agent-memory"
+Issues = "https://github.com/dlxeva/flowgrid-agent-memory/issues"
+
+[project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
+
+[project.scripts]
+flowgrid-memory = "aml_retriever.product_cli:main"
+flowgrid-memory-rest = "aml_retriever.rest_v1:main"
+flowgrid-memory-mcp = "aml_retriever.mcp_adapter:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "aml_retriever._version.PRODUCT_VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aml_retriever*"]
+
+[tool.setuptools.package-data]
+"aml_retriever.evaluation" = [
+  "fixtures/*.json",
+  "baselines/*.json",
+]
