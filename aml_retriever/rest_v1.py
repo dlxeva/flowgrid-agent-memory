@@ -748,48 +748,28 @@ class GovernedRestAdapter:
             requested_scope=requested_scope,
             operation=OPERATION_TRANSITION,
         )
-        # Record scope is immutable, but transition_memory accepts only a user
-        # and record ID.  Prove the exact target's scope through the authorized
-        # facade audit path before mutation; never trust a body-declared scope
-        # alone.  Consequently REST transitions require read+audit as well as
-        # transition permission and the trusted audit-purpose gate.
+        # Bind opaque record IDs through an audit-authorized, metadata-only
+        # primary-key lookup. The request-declared scope is accepted only after
+        # trusted principal restrictions are applied, and the record must match
+        # that effective scope exactly. This avoids an unbounded or truncated
+        # audit-result scan and loads no memory/evidence body.
+        memory = self._memory_active()
         memory_key = _safe_string(data["memory_key"])
         record_id = _safe_string(data["record_id"])
-        inspected = self._memory_active().query_memory(
-            user_id=user_id,
-            access_context=access.access_context,
-            memory_key=memory_key,
-            mode="audit",
-            scope=access.effective_scope,
-            max_records=10_000,
-            disclosure_policy=access.disclosure_policy,
-        )
-        if not inspected.allowed or inspected.state is None:
-            raise AuthorizationError()
-        matching = [record for record in inspected.state.records if record.id == record_id]
-        if (
-            len(matching) != 1
-            or matching[0].memory_key != memory_key
-            or dict(matching[0].scope) != dict(access.effective_scope)
-        ):
-            # Existence, content, and actual scope remain undisclosed.
-            raise AuthorizationError()
         related_record_id = _optional_string(data, "related_record_id")
-        if related_record_id is not None:
-            target = matching[0]
-            related = [
-                record for record in inspected.state.records if record.id == related_record_id
-            ]
-            if (
-                related_record_id == record_id
-                or len(related) != 1
-                or related[0].memory_key != target.memory_key
-                or related[0].memory_type != target.memory_type
-                or related[0].subject != target.subject
-                or dict(related[0].scope) != dict(access.effective_scope)
-            ):
-                raise AuthorizationError()
-        record = self._memory_active().transition_memory(
+        if not memory.authorize_transition_target(
+            user_id=user_id,
+            record_id=record_id,
+            memory_key=memory_key,
+            access_context=access.access_context,
+            scope=access.effective_scope,
+            related_record_id=related_record_id,
+            disclosure_policy=access.disclosure_policy,
+        ):
+            # Missing, cross-user, cross-scope, wrong-key, and wrong-slot
+            # targets share one fixed denial and disclose no existence signal.
+            raise AuthorizationError()
+        record = memory.transition_memory(
             user_id=user_id,
             record_id=record_id,
             target_status=_safe_string(data["target_status"], maximum=32),

@@ -1345,6 +1345,27 @@ class RetrieverDB:
         """
         return self._write(lambda con: governed.create_memory_record(con, **kwargs))
 
+    def transition_target_matches(
+        self,
+        *,
+        user_id: str,
+        record_id: str,
+        memory_key: str,
+        scope: dict | None,
+        related_record_id: str | None = None,
+    ) -> bool:
+        """Directly verify one exact transition target without audit scanning."""
+
+        with self.connection() as con:
+            return governed.transition_target_matches(
+                con,
+                user_id=user_id,
+                record_id=record_id,
+                memory_key=memory_key,
+                scope=scope,
+                related_record_id=related_record_id,
+            )
+
     def transition_memory(
         self,
         *,

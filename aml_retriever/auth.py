@@ -49,9 +49,10 @@ _OPERATION_PERMISSION = MappingProxyType(
         OPERATION_READ_AUDIT: frozenset({PERMISSION_READ, PERMISSION_AUDIT}),
         OPERATION_COMPILE_CURRENT: frozenset({PERMISSION_READ}),
         OPERATION_COMPILE_AUDIT: frozenset({PERMISSION_READ, PERMISSION_AUDIT}),
-        # REST uses an audit-facade metadata proof to bind an opaque record ID
-        # to its immutable scope before mutation.  Transition is therefore a
-        # deliberate compound grant rather than an implicit permission boost.
+        # REST uses an audit-authorized direct primary-key metadata proof to
+        # bind an opaque record ID to its immutable scope before mutation.
+        # Transition remains a deliberate compound grant rather than an
+        # implicit permission boost.
         OPERATION_TRANSITION: frozenset(
             {PERMISSION_TRANSITION, PERMISSION_READ, PERMISSION_AUDIT}
         ),

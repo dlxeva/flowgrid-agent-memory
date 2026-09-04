@@ -46,9 +46,11 @@ Permissions are independent:
 Every operation validates the concrete user and requested scope before calling
 the facade. Audit rejects wildcard user grants. A REST transition additionally
 requires `memory:read` + `memory:audit`, a permitted trusted audit purpose, and
-an exact `memory_key`: the adapter resolves the target through the authorized
-audit facade and proves its immutable record scope before mutation. This avoids
-trusting a request-declared scope for an opaque record ID. Transition and erase
+an exact `memory_key`: the adapter performs an audit-authorized direct
+primary-key metadata lookup and proves the target's immutable scope before
+mutation. The lookup has no `max_records` window and loads no memory content,
+raw evidence, or state-event body. This avoids trusting a request-declared scope
+for an opaque record ID. Transition and erase
 also require a principal authority of `user`, `owner`, or `policy`; granting the
 permission to an agent/system/external/unknown principal still returns a fixed
 denial.
@@ -79,9 +81,10 @@ All other routes are strict `POST application/json`:
   audit is never injectable even when its pack status is ready.
 - `/v1/memories/transition`: requires `user_id`, `record_id`, `memory_key`,
   `target_status`, `reason`, and optional exact `scope`/`related_record_id`.
-  Actor and authority always come from the principal. A related record must
-  resolve through the same authorized audit view and share the target's exact
-  scope and slot identity. The success receipt contains only `record_id` and
+  Actor and authority always come from the principal. A related record is
+  resolved by the same direct metadata lookup and must share the target's exact
+  user, key, type, subject, and scope. The success receipt contains only
+  `record_id` and
   `current_status`; it does not disclose internal provenance, actors, reasons,
   confirmation metadata, or relation IDs.
 - `/v1/admin/erase-user`: user-wide privacy erasure. It requires both the
