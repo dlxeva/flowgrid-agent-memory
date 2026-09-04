@@ -157,10 +157,19 @@ class ContextPack:
     gaps: list[dict] = field(default_factory=list)
     conflicts: list[dict] = field(default_factory=list)
     owner_gate_required: bool = False
+    completeness: dict = field(
+        default_factory=lambda: {
+            "complete": True,
+            "matched_count": 0,
+            "returned_count": 0,
+            "reason": None,
+        }
+    )
     omitted: dict = field(
         default_factory=lambda: {
             "count": 0,
             "by_reason": {
+                "resolver_limit": 0,
                 "budget": 0,
                 "policy": 0,
                 "audit_evidence": 0,
@@ -182,6 +191,7 @@ class ContextPack:
         object.__setattr__(self, "items", _freeze(self.items))
         object.__setattr__(self, "gaps", _freeze(self.gaps))
         object.__setattr__(self, "conflicts", _freeze(self.conflicts))
+        object.__setattr__(self, "completeness", _freeze(self.completeness))
         object.__setattr__(self, "omitted", _freeze(self.omitted))
         object.__setattr__(self, "budget", _freeze(self.budget))
 
@@ -194,6 +204,7 @@ class ContextPack:
             "gaps": _thaw(self.gaps),
             "conflicts": _thaw(self.conflicts),
             "owner_gate_required": bool(self.owner_gate_required),
+            "completeness": _thaw(self.completeness),
             "omitted": _thaw(self.omitted),
             "budget": _thaw(self.budget),
         }
@@ -257,13 +268,54 @@ def _budget_template(max_chars: int | None, max_tokens: int | None) -> dict:
     }
 
 
-def _omitted(*, budget: int, policy: int, audit_evidence: int) -> dict:
+def _omitted(
+    *,
+    budget: int,
+    policy: int,
+    audit_evidence: int,
+    resolver_limit: int = 0,
+) -> dict:
     values = {
+        "resolver_limit": max(0, int(resolver_limit)),
         "budget": max(0, int(budget)),
         "policy": max(0, int(policy)),
         "audit_evidence": max(0, int(audit_evidence)),
     }
     return {"count": sum(values.values()), "by_reason": values}
+
+
+def _completeness(
+    *,
+    matched_count: int,
+    returned_count: int,
+    resolver_limit: int,
+    budget: int,
+) -> dict:
+    resolver_omitted = max(0, int(resolver_limit))
+    budget_omitted = max(0, int(budget))
+    if resolver_omitted and budget_omitted:
+        reason = "resolver_limit_and_budget"
+    elif resolver_omitted:
+        reason = "resolver_limit"
+    elif budget_omitted:
+        reason = "budget"
+    else:
+        reason = None
+    return {
+        "complete": reason is None,
+        "matched_count": max(0, int(matched_count)),
+        "returned_count": max(0, int(returned_count)),
+        "reason": reason,
+    }
+
+
+def _not_evaluated_completeness() -> dict:
+    return {
+        "complete": False,
+        "matched_count": None,
+        "returned_count": 0,
+        "reason": "not_evaluated",
+    }
 
 
 def _public_locator(locator: str) -> str:
@@ -324,6 +376,26 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
     except TypeError:
         records = [None]
     records_well_formed = all(isinstance(record, MemoryRecord) for record in records)
+    completeness_is_consistent = (
+        isinstance(result.matched_count, int)
+        and not isinstance(result.matched_count, bool)
+        and result.matched_count >= 0
+        and isinstance(result.returned_count, int)
+        and not isinstance(result.returned_count, bool)
+        and result.returned_count >= 0
+        and result.returned_count == len(records)
+        and result.matched_count >= result.returned_count
+        and isinstance(result.truncated, bool)
+        and result.truncated == (result.matched_count > result.returned_count)
+    )
+    normalized_matched_count = (
+        result.matched_count if completeness_is_consistent else 0
+    )
+    resolver_limit_count = (
+        result.matched_count - result.returned_count
+        if completeness_is_consistent
+        else 0
+    )
 
     def string_count(values) -> int:
         try:
@@ -368,13 +440,15 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
     elif mode == "current":
         ready_is_consistent = (
             records_well_formed
+            and completeness_is_consistent
             and bool(records)
             and result.abstain is False
             and result.current_status == "confirmed"
             and all(record.current_status == "confirmed" for record in records)
         )
         unknown_is_consistent = (
-            not records
+            completeness_is_consistent
+            and not records
             and result.abstain is True
             and result.current_status == "unknown"
         )
@@ -411,6 +485,7 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
         audit_ready_is_consistent = (
             not conflict_signal
             and records_well_formed
+            and completeness_is_consistent
             and bool(records)
             and result.abstain is False
             and result.current_status == "audit"
@@ -418,6 +493,7 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
         )
         audit_unknown_is_consistent = (
             not conflict_signal
+            and completeness_is_consistent
             and not records
             and result.abstain is True
             and result.current_status == "unknown"
@@ -469,6 +545,8 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
         bool(result.owner_gate_required),
         policy_count,
         audit_evidence_count,
+        normalized_matched_count,
+        resolver_limit_count,
     )
 
 
@@ -563,6 +641,7 @@ class ContextCompiler:
         owner_gate_required: bool = False,
         gaps: list[dict] | None = None,
         conflicts: list[dict] | None = None,
+        completeness: dict | None = None,
         omitted: dict | None = None,
         status: str = "budget_exceeded",
     ) -> ContextPack:
@@ -576,6 +655,7 @@ class ContextCompiler:
             gaps=list(gaps or []),
             conflicts=list(conflicts or []),
             owner_gate_required=owner_gate_required,
+            completeness=completeness or _not_evaluated_completeness(),
             omitted=omitted or _omitted(budget=0, policy=0, audit_evidence=0),
         )
         # A missing/broken token counter cannot measure itself.  Character
@@ -642,6 +722,8 @@ class ContextCompiler:
             owner_gate,
             policy_count,
             audit_evidence_count,
+            matched_count,
+            resolver_limit_count,
         ) = _normalize_result(result, self.disclosure_policy)
         total_items = len(items)
         error = self.preflight_error(max_chars=max_chars, max_tokens=max_tokens)
@@ -653,10 +735,17 @@ class ContextCompiler:
                 owner_gate_required=owner_gate,
                 gaps=gaps,
                 conflicts=conflicts,
+                completeness=_completeness(
+                    matched_count=matched_count,
+                    returned_count=0,
+                    resolver_limit=resolver_limit_count,
+                    budget=total_items,
+                ),
                 omitted=_omitted(
                     budget=total_items,
                     policy=policy_count,
                     audit_evidence=audit_evidence_count,
+                    resolver_limit=resolver_limit_count,
                 ),
             )
 
@@ -671,10 +760,17 @@ class ContextCompiler:
                 gaps=gaps,
                 conflicts=conflicts,
                 owner_gate_required=owner_gate,
+                completeness=_completeness(
+                    matched_count=matched_count,
+                    returned_count=kept,
+                    resolver_limit=resolver_limit_count,
+                    budget=total_items - kept,
+                ),
                 omitted=_omitted(
                     budget=total_items - kept,
                     policy=policy_count,
                     audit_evidence=audit_evidence_count,
+                    resolver_limit=resolver_limit_count,
                 ),
             )
             try:
@@ -691,6 +787,7 @@ class ContextCompiler:
                     owner_gate_required=owner_gate,
                     gaps=gaps,
                     conflicts=conflicts,
+                    completeness=candidate.completeness,
                     omitted=candidate.omitted,
                 )
             if not self._fits(finalized):
@@ -708,10 +805,17 @@ class ContextCompiler:
             owner_gate_required=owner_gate,
             gaps=gaps,
             conflicts=conflicts,
+            completeness=_completeness(
+                matched_count=matched_count,
+                returned_count=0,
+                resolver_limit=resolver_limit_count,
+                budget=total_items,
+            ),
             omitted=_omitted(
                 budget=total_items,
                 policy=policy_count,
                 audit_evidence=audit_evidence_count,
+                resolver_limit=resolver_limit_count,
             ),
         )
 
