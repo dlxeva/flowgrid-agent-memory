@@ -44,7 +44,12 @@ from .extraction import (
     validate_proposals,
 )
 from .config import RetrieverConfig
-from .context import ContextCompiler, ContextPack, TokenCounter
+from .context import (
+    MAX_CONTEXT_RECORDS,
+    ContextCompiler,
+    ContextPack,
+    TokenCounter,
+)
 from .governance import CurrentStateResult, MemoryRecord, RawEvent
 from .retriever import AddResult, Evidence, RetrieverDB, SearchResult
 
@@ -447,6 +452,7 @@ class MemoryService:
             isinstance(max_records, bool)
             or not isinstance(max_records, int)
             or max_records <= 0
+            or max_records > MAX_CONTEXT_RECORDS
         ):
             return compiler.failure(
                 reason="invalid_max_records",
