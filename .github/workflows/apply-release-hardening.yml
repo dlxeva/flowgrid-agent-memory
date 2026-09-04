@@ -27,6 +27,26 @@ jobs:
           git show FETCH_HEAD:tests/test_context_compiler_bounds.py > tests/test_context_compiler_bounds.py
       - name: Apply integrated release patch
         run: python scripts/apply_release_hardening.py
+      - name: Migrate packaging entrypoint expectations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_packaging.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              "flowgrid-memory = aml_retriever.product_cli:main": "flowgrid-memory = flowgrid_memory.cli:main",
+              "flowgrid-memory-rest = aml_retriever.rest_v1:main": "flowgrid-memory-rest = flowgrid_memory.rest:main",
+              "flowgrid-memory-mcp = aml_retriever.mcp_adapter:main": "flowgrid-memory-mcp = flowgrid_memory.mcp:main",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one packaging entrypoint assertion for {old!r}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
       - name: Install full test environment
         run: |
           python -m pip install --upgrade pip 'setuptools>=68' build
