@@ -87,7 +87,8 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --run-url "$run_url" \
             --tests-passed \
-            --fresh-install-passed
+            --fresh-install-passed \
+            --container-passed
       - name: Attest wheel and sdist provenance
         uses: actions/attest@v4.2.2
         with:
