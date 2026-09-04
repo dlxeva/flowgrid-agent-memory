@@ -1,0 +1,64 @@
+name: Apply release hardening
+
+on:
+  push:
+    branches: ["release/0.1.0"]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: "!contains(github.event.head_commit.message, '[release-hardening-applied]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Import validated ContextCompiler tests and limits document
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin perf/context-compiler-bounds
+          git show FETCH_HEAD:docs/CONTEXT_LIMITS.md > docs/CONTEXT_LIMITS.md
+          git show FETCH_HEAD:tests/test_context_compiler_bounds.py > tests/test_context_compiler_bounds.py
+      - name: Apply integrated release patch
+        run: python scripts/apply_release_hardening.py
+      - name: Install full test environment
+        run: |
+          python -m pip install --upgrade pip 'setuptools>=68' build
+          python -m pip install -e '.[mcp]'
+      - name: Run full acceptance suite
+        run: ./scripts/run_tests.sh --with-mcp
+      - name: Build wheel and sdist
+        run: python -m build
+      - name: Verify fresh wheel and product namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python -m venv /tmp/flowgrid-hardening-venv
+          /tmp/flowgrid-hardening-venv/bin/python -m pip install --upgrade pip
+          /tmp/flowgrid-hardening-venv/bin/python -m pip install "$wheel" 'mcp>=2,<3'
+          /tmp/flowgrid-hardening-venv/bin/python -c 'import flowgrid_memory; assert flowgrid_memory.__version__ == "0.1.0"'
+          /tmp/flowgrid-hardening-venv/bin/python -c 'import aml_retriever; assert aml_retriever.PRODUCT_VERSION == "0.1.0"'
+          /tmp/flowgrid-hardening-venv/bin/flowgrid-memory doctor --ephemeral
+          /tmp/flowgrid-hardening-venv/bin/flowgrid-memory demo --ephemeral
+          /tmp/flowgrid-hardening-venv/bin/flowgrid-memory-rest --help >/dev/null
+          /tmp/flowgrid-hardening-venv/bin/flowgrid-memory-mcp --help >/dev/null
+      - name: Commit validated release tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply_release_hardening.py
+          rm -f .github/workflows/apply-release-hardening.yml
+          rm -rf build dist flowgrid_agent_memory.egg-info
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "release: harden v0.1.0 package and publication [release-hardening-applied]"
+          git push origin HEAD:release/0.1.0
