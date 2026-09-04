@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f scripts/apply_release_hardening.py
-          rm -f .github/workflows/apply-release-hardening.yml
+          rm -f .github/workflows/release.yml
           rm -rf build dist flowgrid_agent_memory.egg-info
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
