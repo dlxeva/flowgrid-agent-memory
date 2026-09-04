@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-url", required=True)
     parser.add_argument("--tests-passed", action="store_true")
     parser.add_argument("--fresh-install-passed", action="store_true")
+    parser.add_argument("--container-passed", action="store_true")
     return parser.parse_args()
 
 
@@ -48,7 +49,11 @@ def main() -> int:
         raise SystemExit("invalid version")
     if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
         raise SystemExit("invalid commit")
-    if not args.tests_passed or not args.fresh_install_passed:
+    if not (
+        args.tests_passed
+        and args.fresh_install_passed
+        and args.container_passed
+    ):
         raise SystemExit("release gates were not explicitly marked passed")
     artifacts = sorted(
         path for path in args.dist.iterdir()
@@ -86,6 +91,10 @@ def main() -> int:
             "tests": {"status": "passed", "command": "./scripts/run_tests.sh --with-mcp"},
             "fresh_wheel_install": {"status": "passed"},
             "public_namespace": {"status": "passed", "module": "flowgrid_memory"},
+            "container_contract": {
+                "status": "passed",
+                "targets": ["cli", "mcp"],
+            },
         },
         "artifacts": subjects,
     }
