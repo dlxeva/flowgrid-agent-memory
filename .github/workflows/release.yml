@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python -c 'from flowgrid_memory import __version__; print(__version__)')"
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release ${tag} already exists" >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Install build and test dependencies
+        run: |
+          python -m pip install --upgrade pip 'setuptools>=77' build
+          python -m pip install -e '.[mcp]'
+      - name: Run full acceptance suite
+        run: ./scripts/run_tests.sh --with-mcp
+      - name: Build wheel and sdist
+        run: python -m build
+      - name: Fresh wheel install and smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python -m venv /tmp/flowgrid-release-venv
+          /tmp/flowgrid-release-venv/bin/python -m pip install --upgrade pip
+          /tmp/flowgrid-release-venv/bin/python -m pip install "$wheel" 'mcp>=2,<3'
+          /tmp/flowgrid-release-venv/bin/python -c 'import flowgrid_memory; assert flowgrid_memory.__version__'
+          /tmp/flowgrid-release-venv/bin/python -c 'import aml_retriever; assert aml_retriever.PRODUCT_VERSION'
+          /tmp/flowgrid-release-venv/bin/flowgrid-memory --version
+          /tmp/flowgrid-release-venv/bin/flowgrid-memory doctor --ephemeral
+          /tmp/flowgrid-release-venv/bin/flowgrid-memory demo --ephemeral
+          /tmp/flowgrid-release-venv/bin/flowgrid-memory-rest --help >/dev/null
+          /tmp/flowgrid-release-venv/bin/flowgrid-memory-mcp --help >/dev/null
+      - name: Verify container targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --target cli -t flowgrid-agent-memory:release .
+          docker run --rm flowgrid-agent-memory:release
+          docker run --rm flowgrid-agent-memory:release demo --ephemeral
+          docker build --target mcp -t flowgrid-agent-memory:mcp-release .
+          docker run --rm flowgrid-agent-memory:mcp-release --help
+      - name: Generate checksums, acceptance, SBOM, and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          python scripts/generate_release_evidence.py \
+            --dist dist \
+            --output release-evidence \
+            --version "${{ steps.version.outputs.version }}" \
+            --commit "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-url "$run_url" \
+            --tests-passed \
+            --fresh-install-passed \
+            --container-passed
+      - name: Attest wheel and sdist provenance
+        uses: actions/attest@v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+      - name: Attest SPDX SBOM
+        uses: actions/attest@v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+          sbom-path: release-evidence/sbom.spdx.json
+      - name: Create annotated tag and GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$GITHUB_SHA" -m "FlowGrid Agent Memory ${tag}"
+          git push origin "$tag"
+          mkdir -p release-assets
+          cp dist/* release-assets/
+          cp release-evidence/* release-assets/
+          gh release create "$tag" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "FlowGrid Agent Memory ${tag}" \
+            --notes-file docs/RELEASE_NOTES.md
+        env:
+          GH_TOKEN: ${{ github.token }}

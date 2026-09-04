@@ -6,9 +6,10 @@
 
 [English](README.md) · [安装](docs/INSTALL.md) ·
 [受治理 REST](docs/REST_V1.md) · [MCP](docs/MCP.md) ·
-[Owner 审核](docs/OWNER_REVIEW.md) · [本地安全](docs/LOCAL_SECURITY.md) ·
+[Owner 审核](docs/OWNER_REVIEW.md) · [公共 API](docs/PUBLIC_API.md) ·
+[容器契约](docs/CONTAINER.md) · [本地安全](docs/LOCAL_SECURITY.md) ·
 [数据生命周期](docs/DATA_LIFECYCLE.md) ·
-[评测](docs/EVAL.md) · [本地验收](docs/ACCEPTANCE_V0_1.md)
+[评测](docs/EVAL.md) · [验收标准](docs/ACCEPTANCE_CRITERIA.md)
 
 FlowGrid Agent Memory 保存不可改写的原始证据，把提取结果与已确认事实分开，只解析
 当前有效的受治理状态，再按授权和披露策略编译成供 Agent 使用的最小 ContextPack。
@@ -72,10 +73,11 @@ flowgrid-memory demo --ephemeral
 ## Python 门面
 
 `FlowGridMemory` 是 CLI、REST 与 MCP 共用的稳定门面，与传输方式无关。数据库路径
-必须显式给出，也不会向调用方暴露底层 DB 或通用 SQL 入口。
+必须显式给出，也不会向调用方暴露底层 DB 或通用 SQL 入口。新的产品集成统一从
+`flowgrid_memory` 导入；`aml_retriever` 保留为实现层与 AML 兼容命名空间。
 
 ```python
-from aml_retriever import AccessContext, FlowGridMemory, PERMISSION_READ
+from flowgrid_memory import AccessContext, FlowGridMemory, PERMISSION_READ
 
 access = AccessContext(
     principal_id="trusted-local-owner",
@@ -124,6 +126,13 @@ demo 不打印记忆正文、数据库路径或内部 traceback，只证明这�
 
 `RawEvent → candidate → unknown/owner gate → owner-confirmed current → authorized ContextPack`
 
+## 容器镜像
+
+默认 OCI target 是无网络监听的 CLI 镜像，启动后运行
+`flowgrid-memory doctor --ephemeral`。另有 `mcp` 构建 target 提供 stdio
+能力。当前容器契约明确不提供 REST 端口 target；受治理 REST 继续作为宿主机
+loopback 服务。详见 [容器契约](docs/CONTAINER.md)。
+
 ## 受治理的本地适配器
 
 REST 只接受字面地址 `127.0.0.1`。启动时必须选择可信本地进程边界或 bearer 认证，
@@ -167,6 +176,12 @@ flowgrid-memory-mcp \
 
 在持久库中放入真实用户数据前，请先阅读
 [docs/LOCAL_SECURITY.md](docs/LOCAL_SECURITY.md)。
+
+## 发布证据
+
+发布工作流会重新构建并执行全量测试，在全新环境安装 wheel，生成校验和、验收
+JSON、SPDX SBOM 与 provenance JSON，并为 wheel 和 sdist 创建 GitHub Sigstore
+证明。稳定验收条件见 [验收标准](docs/ACCEPTANCE_CRITERIA.md)。
 
 ## 参与贡献与安全报告
 

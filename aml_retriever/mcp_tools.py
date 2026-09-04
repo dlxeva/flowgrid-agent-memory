@@ -13,6 +13,7 @@ from threading import Lock, RLock
 from typing import Callable
 
 from .api import ApiError
+from .context import MAX_CONTEXT_RECORDS
 from .auth import (
     OPERATION_COMPILE_CURRENT,
     OPERATION_EXTRACT,
@@ -36,7 +37,7 @@ TOOL_NAMES = (
 
 DEFAULT_MAX_CHARS = 32_768
 MAX_MAX_CHARS = 1_000_000
-MAX_RECORDS = 1_000
+MAX_RECORDS = MAX_CONTEXT_RECORDS
 MAX_MESSAGES = 1_000
 
 _DB_LOCKS_GUARD = Lock()

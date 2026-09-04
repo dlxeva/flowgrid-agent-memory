@@ -115,9 +115,9 @@ class TestOfflineWheel(unittest.TestCase):
                 if name.endswith(".dist-info/entry_points.txt")
             )
             entries = archive.read(entry_name).decode("utf-8")
-        self.assertIn("flowgrid-memory = aml_retriever.product_cli:main", entries)
-        self.assertIn("flowgrid-memory-rest = aml_retriever.rest_v1:main", entries)
-        self.assertIn("flowgrid-memory-mcp = aml_retriever.mcp_adapter:main", entries)
+        self.assertIn("flowgrid-memory = flowgrid_memory.cli:main", entries)
+        self.assertIn("flowgrid-memory-rest = flowgrid_memory.rest:main", entries)
+        self.assertIn("flowgrid-memory-mcp = flowgrid_memory.mcp:main", entries)
 
     def test_canonical_package_data_present_and_project_state_absent(self):
         with zipfile.ZipFile(self.wheel) as archive:

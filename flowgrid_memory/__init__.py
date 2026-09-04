@@ -1,0 +1,133 @@
+"""Stable public API for FlowGrid Agent Memory.
+
+Implementation and AML compatibility modules remain under ``aml_retriever``.
+New integrations should import product contracts from this namespace.
+"""
+from aml_retriever._version import AML_ADAPTER_VERSION, PRODUCT_VERSION
+from aml_retriever.access import (
+    PERMISSION_AUDIT,
+    PERMISSION_EVIDENCE,
+    PERMISSION_READ,
+    AccessContext,
+    AccessDecision,
+    DisclosurePolicy,
+    authorize_memory_read,
+)
+from aml_retriever.compiler import CompilationReceipt
+from aml_retriever.context import (
+    CONTEXT_STATUSES,
+    MAX_CONTEXT_ITEM_BYTES,
+    MAX_CONTEXT_PACK_BYTES,
+    MAX_CONTEXT_RECORDS,
+    MAX_CONTEXT_REQUEST_CHARS,
+    MAX_CONTEXT_TOTAL_ITEM_BYTES,
+    ContextCompiler,
+    ContextPack,
+    TokenCounter,
+    canonical_json,
+)
+from aml_retriever.extraction import (
+    DIRECTIVE_PREFIX,
+    CallableMemoryExtractor,
+    DirectiveMemoryExtractor,
+    EvidenceSpan,
+    ExtractionConflict,
+    ExtractionError,
+    ExtractionRequest,
+    ExtractionValidationError,
+    ExtractorIdentity,
+    ExtractorInvocationError,
+    MemoryExtractor,
+    ProposalDraft,
+)
+from aml_retriever.facade import (
+    AuthorizedMemoryResult,
+    FlowGridMemory,
+    IngestReceipt,
+    PrivacyEraseReceipt,
+)
+from aml_retriever.governance import (
+    ALLOWED_TRANSITIONS,
+    AUTHORITIES,
+    CONFIRM_AUTHORITIES,
+    GOVERNANCE_AUTHORITIES,
+    GOVERNANCE_SCHEMA_VERSION,
+    MEMORY_STATES,
+    MEMORY_TYPES,
+    CurrentStateResult,
+    GovernanceConflict,
+    GovernanceError,
+    MemoryRecord,
+    MemoryStateEvent,
+    RawEvent,
+)
+from aml_retriever.migrations import SchemaReport, inspect_schema
+from aml_retriever.model_extraction import (
+    MODEL_EXTRACTOR_SCHEMA,
+    MODEL_PROMPT_VERSION,
+    QuoteAnchoredModelExtractor,
+    build_model_extraction_prompt,
+    quote_anchored_identity,
+)
+
+__version__ = PRODUCT_VERSION
+
+__all__ = [
+    "PRODUCT_VERSION",
+    "AML_ADAPTER_VERSION",
+    "__version__",
+    "FlowGridMemory",
+    "IngestReceipt",
+    "AuthorizedMemoryResult",
+    "PrivacyEraseReceipt",
+    "AccessContext",
+    "AccessDecision",
+    "DisclosurePolicy",
+    "PERMISSION_READ",
+    "PERMISSION_AUDIT",
+    "PERMISSION_EVIDENCE",
+    "authorize_memory_read",
+    "ContextPack",
+    "ContextCompiler",
+    "TokenCounter",
+    "CONTEXT_STATUSES",
+    "MAX_CONTEXT_RECORDS",
+    "MAX_CONTEXT_ITEM_BYTES",
+    "MAX_CONTEXT_TOTAL_ITEM_BYTES",
+    "MAX_CONTEXT_PACK_BYTES",
+    "MAX_CONTEXT_REQUEST_CHARS",
+    "canonical_json",
+    "RawEvent",
+    "MemoryRecord",
+    "MemoryStateEvent",
+    "CurrentStateResult",
+    "GovernanceError",
+    "GovernanceConflict",
+    "MEMORY_STATES",
+    "MEMORY_TYPES",
+    "AUTHORITIES",
+    "CONFIRM_AUTHORITIES",
+    "GOVERNANCE_AUTHORITIES",
+    "GOVERNANCE_SCHEMA_VERSION",
+    "ALLOWED_TRANSITIONS",
+    "CompilationReceipt",
+    "DIRECTIVE_PREFIX",
+    "ExtractionError",
+    "ExtractionValidationError",
+    "ExtractionConflict",
+    "ExtractorInvocationError",
+    "ExtractorIdentity",
+    "EvidenceSpan",
+    "ExtractionRequest",
+    "ProposalDraft",
+    "MemoryExtractor",
+    "DirectiveMemoryExtractor",
+    "CallableMemoryExtractor",
+    "MODEL_EXTRACTOR_SCHEMA",
+    "MODEL_PROMPT_VERSION",
+    "QuoteAnchoredModelExtractor",
+    "build_model_extraction_prompt",
+    "quote_anchored_identity",
+    "SchemaReport",
+    "inspect_schema",
+]

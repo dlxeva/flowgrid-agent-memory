@@ -7,9 +7,10 @@ Evidence-first, governed local memory for AI agents.
 
 [中文](README.zh-CN.md) · [Install](docs/INSTALL.md) ·
 [Governed REST](docs/REST_V1.md) · [MCP](docs/MCP.md) ·
-[Owner review](docs/OWNER_REVIEW.md) · [Local security](docs/LOCAL_SECURITY.md) ·
+[Owner review](docs/OWNER_REVIEW.md) · [Public API](docs/PUBLIC_API.md) ·
+[Container](docs/CONTAINER.md) · [Local security](docs/LOCAL_SECURITY.md) ·
 [Data lifecycle](docs/DATA_LIFECYCLE.md) · [Evaluation](docs/EVAL.md) ·
-[Local acceptance](docs/ACCEPTANCE_V0_1.md)
+[Acceptance](docs/ACCEPTANCE_CRITERIA.md)
 
 FlowGrid Agent Memory is a general local memory core. It preserves raw evidence,
 separates proposals from confirmed truth, resolves only current governed state,
@@ -89,10 +90,12 @@ For an offline wheel build and fresh-environment verification, see
 
 `FlowGridMemory` is the stable transport-neutral boundary shared by the CLI,
 REST, and MCP adapters. The database path is mandatory and the underlying
-database object is not exposed.
+database object is not exposed. New product integrations should import from
+`flowgrid_memory`; `aml_retriever` remains the implementation and AML
+compatibility namespace.
 
 ```python
-from aml_retriever import AccessContext, FlowGridMemory, PERMISSION_READ
+from flowgrid_memory import AccessContext, FlowGridMemory, PERMISSION_READ
 
 access = AccessContext(
     principal_id="trusted-local-owner",
@@ -142,6 +145,14 @@ The demo proves this state chain without printing the memory body, database
 path, or internal traceback:
 
 `raw event → candidate → unknown/owner gate → owner-confirmed current → authorized ContextPack`
+
+## Container image
+
+The default OCI target is a non-networked CLI image and runs
+`flowgrid-memory doctor --ephemeral`. A separate `mcp` build target supports
+stdio use. The verified container contract intentionally provides no REST port
+target; governed REST remains a host-local loopback service. See
+[Container contract](docs/CONTAINER.md).
 
 ## Governed local adapters
 
@@ -195,6 +206,13 @@ This release does **not** claim:
 
 See [docs/LOCAL_SECURITY.md](docs/LOCAL_SECURITY.md) before placing real user
 data in a persistent database.
+
+## Release evidence
+
+The release workflow rebuilds and tests the package, performs a fresh-wheel
+install, publishes checksums, acceptance JSON, SPDX SBOM, and provenance JSON,
+and creates GitHub Sigstore attestations for the wheel and sdist. Stable
+criteria are documented in [Acceptance criteria](docs/ACCEPTANCE_CRITERIA.md).
 
 ## Contributing and security
 
