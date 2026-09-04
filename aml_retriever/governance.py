@@ -145,6 +145,39 @@ class CurrentStateResult:
     owner_gate_required: bool = False
     raw_events: list[RawEvent] = field(default_factory=list)
     state_events: list[MemoryStateEvent] = field(default_factory=list)
+    matched_count: int | None = None
+    returned_count: int | None = None
+    truncated: bool | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            record_count = len(self.records)
+        except TypeError:
+            raise ValueError("records must be a sized collection") from None
+        returned_count = (
+            record_count if self.returned_count is None else self.returned_count
+        )
+        matched_count = (
+            returned_count if self.matched_count is None else self.matched_count
+        )
+        if (
+            isinstance(matched_count, bool)
+            or not isinstance(matched_count, int)
+            or matched_count < 0
+            or isinstance(returned_count, bool)
+            or not isinstance(returned_count, int)
+            or returned_count < 0
+            or returned_count != record_count
+            or matched_count < returned_count
+        ):
+            raise ValueError("invalid current-state completeness metadata")
+        expected_truncated = matched_count > returned_count
+        truncated = expected_truncated if self.truncated is None else self.truncated
+        if not isinstance(truncated, bool) or truncated != expected_truncated:
+            raise ValueError("invalid current-state completeness metadata")
+        object.__setattr__(self, "matched_count", matched_count)
+        object.__setattr__(self, "returned_count", returned_count)
+        object.__setattr__(self, "truncated", truncated)
 
     def to_dict(self) -> dict:
         return {
@@ -158,6 +191,11 @@ class CurrentStateResult:
             "owner_gate_required": self.owner_gate_required,
             "raw_events": [event.to_dict() for event in self.raw_events],
             "state_events": [event.to_dict() for event in self.state_events],
+            "completeness": {
+                "matched_count": self.matched_count,
+                "returned_count": self.returned_count,
+                "truncated": self.truncated,
+            },
         }
 
 
@@ -1034,6 +1072,7 @@ def query_current_state(
         )
 
     if mode == "audit":
+        matched_count = len(rows)
         records = [
             record_at_cutoff(
                 row,
@@ -1074,6 +1113,9 @@ def query_current_state(
             records=records,
             raw_events=events,
             state_events=state_events,
+            matched_count=matched_count,
+            returned_count=len(records),
+            truncated=matched_count > len(records),
         )
 
     by_base: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
@@ -1155,7 +1197,9 @@ def query_current_state(
                 record.memory_key, record.memory_type, record.subject,
                 json.dumps(record.scope, ensure_ascii=False, sort_keys=True), record.id,
             ),
-        )[:max_records]
+        )
+        matched_count = len(selected)
+        selected = selected[:max_records]
         return CurrentStateResult(
             mode="current",
             current_status="confirmed",
@@ -1164,6 +1208,9 @@ def query_current_state(
             records=selected,
             withheld_record_ids=sorted(set(withheld)),
             owner_gate_required=owner_gate,
+            matched_count=matched_count,
+            returned_count=len(selected),
+            truncated=matched_count > len(selected),
         )
     if unknown_ids:
         return CurrentStateResult(
