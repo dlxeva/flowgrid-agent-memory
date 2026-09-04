@@ -16,14 +16,19 @@ A releasable commit must satisfy all of the following:
 7. A wheel and sdist build successfully from the tagged source.
 8. The wheel installs in a fresh environment and exposes `flowgrid_memory` plus
    the three product command entry points.
-9. Release assets include SHA-256 checksums, acceptance JSON, SPDX SBOM, and
-   provenance JSON.
-10. GitHub artifact attestations are created for the wheel and sdist.
+9. The supported `cli` and `mcp` container targets both build and execute their
+   documented smoke commands; the image exposes no REST port target.
+10. Release assets include SHA-256 checksums, acceptance JSON, SPDX SBOM, and
+    provenance JSON.
+11. GitHub artifact attestations are created for the wheel and sdist.
 
 The release workflow runs these gates before creating the tag and GitHub
 Release. Generated assets are the evidence for one exact commit and version.
-Local development can execute the same main test gate with:
+Local development can execute the main code gate with:
 
 ```bash
 ./scripts/run_tests.sh --with-mcp
 ```
+
+Container verification runs in the repository CI and release workflow from the
+same Dockerfile targets documented in [CONTAINER.md](CONTAINER.md).
