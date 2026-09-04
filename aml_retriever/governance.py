@@ -957,6 +957,72 @@ def transition_memory_record(
     return replace(memory_record_from_row(updated), status=target_status)
 
 
+def transition_target_matches(
+    con: sqlite3.Connection,
+    *,
+    user_id: str,
+    record_id: str,
+    memory_key: str,
+    scope: dict | None,
+    related_record_id: str | None = None,
+) -> bool:
+    """Bind opaque transition IDs to one exact authorized slot.
+
+    The lookup is intentionally metadata-only and primary-key driven. It does
+    not load memory content, raw evidence, state-event bodies, or an audit
+    result window. A false result discloses no distinction between a missing
+    record and a record outside the authorized user/key/scope binding.
+    """
+
+    def required(value: object, *, field: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise GovernanceError(f"{field} is required")
+        return value.strip()
+
+    normalized_user = required(user_id, field="user_id")
+    normalized_record = required(record_id, field="record_id")
+    normalized_key = required(memory_key, field="memory_key")
+    _normalized_scope, expected_scope_json = _json_object(
+        scope,
+        user_id=normalized_user,
+    )
+    record_ids = [normalized_record]
+    normalized_related: str | None = None
+    if related_record_id is not None:
+        normalized_related = required(
+            related_record_id,
+            field="related_record_id",
+        )
+        if normalized_related == normalized_record:
+            return False
+        record_ids.append(normalized_related)
+
+    placeholders = ",".join("?" for _ in record_ids)
+    cutoff = utc_now()
+    rows = con.execute(
+        f"SELECT mr.id,mr.user_id,mr.memory_key,mr.memory_type,mr.subject,mr.scope_json "
+        f"FROM memory_records mr WHERE mr.user_id=? "
+        f"AND mr.id IN ({placeholders}) AND EXISTS ("
+        f"SELECT 1 FROM memory_state_events mse "
+        f"WHERE mse.user_id=mr.user_id AND mse.record_id=mr.id "
+        f"AND mse.transitioned_at<=?)",
+        (normalized_user, *record_ids, cutoff),
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    target = by_id.get(normalized_record)
+    if (
+        target is None
+        or target["memory_key"] != normalized_key
+        or target["scope_json"] != expected_scope_json
+    ):
+        return False
+    if normalized_related is not None:
+        related = by_id.get(normalized_related)
+        if related is None or _slot_identity(related) != _slot_identity(target):
+            return False
+    return True
+
+
 def _valid_at(row: sqlite3.Row, as_of: str) -> bool:
     valid_from = row["valid_from"]
     valid_until = row["valid_until"]
@@ -1254,5 +1320,6 @@ __all__ = [
     "run_migrations",
     "create_memory_record",
     "transition_memory_record",
+    "transition_target_matches",
     "query_current_state",
 ]

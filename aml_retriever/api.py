@@ -225,6 +225,25 @@ class MemoryService:
         """Create a candidate/inferred record; never an implicit confirmation."""
         return self.db.propose_memory(**kwargs)
 
+    def transition_target_matches(
+        self,
+        *,
+        user_id: str,
+        record_id: str,
+        memory_key: str,
+        scope: dict | None,
+        related_record_id: str | None = None,
+    ) -> bool:
+        """Metadata-only record-ID binding for a trusted transition adapter."""
+
+        return self.db.transition_target_matches(
+            user_id=user_id,
+            record_id=record_id,
+            memory_key=memory_key,
+            scope=scope,
+            related_record_id=related_record_id,
+        )
+
     def transition_memory(
         self,
         *,

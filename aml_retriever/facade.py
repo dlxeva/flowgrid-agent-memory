@@ -191,6 +191,44 @@ class FlowGridMemory:
             state_reason=state_reason,
         )
 
+    def authorize_transition_target(
+        self,
+        *,
+        user_id: str,
+        record_id: str,
+        memory_key: str,
+        access_context: AccessContext,
+        scope: Mapping[str, str] | None = None,
+        related_record_id: str | None = None,
+        disclosure_policy: DisclosurePolicy | None = None,
+    ) -> bool:
+        """Authorize audit metadata access, then bind opaque IDs directly.
+
+        This method validates only the immutable user/key/scope/slot binding.
+        The subsequent lifecycle transition remains subject to the governance
+        state machine and actor-authority checks in :meth:`transition_memory`.
+        """
+
+        policy = disclosure_policy if disclosure_policy is not None else DisclosurePolicy()
+        if not isinstance(policy, DisclosurePolicy):
+            return False
+        decision = authorize_memory_read(
+            access_context,
+            user_id=user_id,
+            requested_scope=dict(scope or {}),
+            mode="audit",
+            disclosure_policy=policy,
+        )
+        if not decision.allowed:
+            return False
+        return self._active().transition_target_matches(
+            user_id=user_id,
+            record_id=record_id,
+            memory_key=memory_key,
+            scope=dict(decision.effective_scope),
+            related_record_id=related_record_id,
+        )
+
     def transition_memory(
         self,
         *,
