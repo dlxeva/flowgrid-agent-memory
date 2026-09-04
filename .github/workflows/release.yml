@@ -53,18 +53,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          python -m venv /tmp/flowgrid-release-venv
-          /tmp/flowgrid-release-venv/bin/python -m pip install --upgrade pip
-          /tmp/flowgrid-release-venv/bin/python -m pip install "$wheel" 'mcp>=2,<3'
-          /tmp/flowgrid-release-venv/bin/python -c 'import flowgrid_memory; assert flowgrid_memory.__version__'
-          /tmp/flowgrid-release-venv/bin/python -c 'import aml_retriever; assert aml_retriever.PRODUCT_VERSION'
-          /tmp/flowgrid-release-venv/bin/flowgrid-memory --version
-          /tmp/flowgrid-release-venv/bin/flowgrid-memory doctor --ephemeral
-          /tmp/flowgrid-release-venv/bin/flowgrid-memory demo --ephemeral
-          /tmp/flowgrid-release-venv/bin/flowgrid-memory-rest --help >/dev/null
-          /tmp/flowgrid-release-venv/bin/flowgrid-memory-mcp --help >/dev/null
+          python scripts/smoke_wheel.py dist/*.whl
       - name: Verify container targets
         shell: bash
         run: |
@@ -73,7 +62,7 @@ jobs:
           docker run --rm flowgrid-agent-memory:release
           docker run --rm flowgrid-agent-memory:release demo --ephemeral
           docker build --target mcp -t flowgrid-agent-memory:mcp-release .
-          docker run --rm flowgrid-agent-memory:mcp-release --help
+          python scripts/smoke_mcp.py --container-image flowgrid-agent-memory:mcp-release
       - name: Generate checksums, acceptance, SBOM, and provenance
         shell: bash
         run: |

@@ -15,9 +15,13 @@ A releasable commit must satisfy all of the following:
 6. Context compilation respects record, item, aggregate, and final-pack limits.
 7. A wheel and sdist build successfully from the tagged source.
 8. The wheel installs in a fresh environment and exposes `flowgrid_memory` plus
-   the three product command entry points.
+   the three product command entry points. Imports must resolve inside that
+   environment, from a working directory outside the checkout with Python path
+   overrides removed. The installed MCP entry point passes the stdio probe.
 9. The supported `cli` and `mcp` container targets both build and execute their
-   documented smoke commands; the image exposes no REST port target.
+   documented smoke commands; MCP passes an actual SDK stdio session, including
+   candidate/owner-gate and cross-user/cross-scope rejection checks. Help output
+   alone is not container acceptance. The image exposes no REST port target.
 10. Release assets include SHA-256 checksums, acceptance JSON, SPDX SBOM, and
     provenance JSON.
 11. GitHub artifact attestations are created for the wheel and sdist.
@@ -32,3 +36,10 @@ Local development can execute the main code gate with:
 
 Container verification runs in the repository CI and release workflow from the
 same Dockerfile targets documented in [CONTAINER.md](CONTAINER.md).
+
+The PR container gate also builds and verifies the wheel without publishing:
+
+```bash
+python -m build
+python scripts/smoke_wheel.py dist/*.whl
+```
