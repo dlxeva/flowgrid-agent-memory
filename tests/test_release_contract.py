@@ -12,12 +12,26 @@ class TestReleaseContract(unittest.TestCase):
         self.assertNotIn('ENTRYPOINT ["flowgrid-memory-rest"]', dockerfile)
         self.assertNotIn("EXPOSE ", dockerfile)
 
-    def test_release_workflow_requires_acceptance_evidence_and_attestation(self):
+    def test_ci_builds_and_runs_both_supported_container_targets(self):
+        workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for required in (
+            "name: Container contract",
+            "docker build --target cli",
+            "docker run --rm flowgrid-agent-memory:ci",
+            "docker build --target mcp",
+            "docker run --rm flowgrid-agent-memory:mcp-ci --help",
+        ):
+            self.assertIn(required, workflow)
+
+    def test_release_workflow_requires_all_evidence_and_attestation_gates(self):
         workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
         for required in (
             "./scripts/run_tests.sh --with-mcp",
             "python -m build",
+            "docker build --target cli",
+            "docker build --target mcp",
             "generate_release_evidence.py",
+            "--container-passed",
             "actions/attest@v4.2.2",
             "artifact-metadata: write",
             "gh release create",
