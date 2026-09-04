@@ -6,7 +6,8 @@
 
 [English](README.md) · [安装](docs/INSTALL.md) ·
 [受治理 REST](docs/REST_V1.md) · [MCP](docs/MCP.md) ·
-[本地安全](docs/LOCAL_SECURITY.md) · [数据生命周期](docs/DATA_LIFECYCLE.md) ·
+[Owner 审核](docs/OWNER_REVIEW.md) · [本地安全](docs/LOCAL_SECURITY.md) ·
+[数据生命周期](docs/DATA_LIFECYCLE.md) ·
 [评测](docs/EVAL.md) · [本地验收](docs/ACCEPTANCE_V0_1.md)
 
 FlowGrid Agent Memory 保存不可改写的原始证据，把提取结果与已确认事实分开，只解析
@@ -61,8 +62,9 @@ flowgrid-memory doctor --ephemeral
 flowgrid-memory demo --ephemeral
 ```
 
-产品 CLI 不会静默创建 `./aml.db`。所有涉及数据库的命令都必须明确选择
-`--db PATH` 或 `--ephemeral`。`doctor --db PATH` 只读检查：目标不存在或 schema
+产品 CLI 不会静默创建 `./aml.db`。`doctor` 与 `demo` 必须明确选择
+`--db PATH` 或 `--ephemeral`；`review` 只接受已经存在的 `--db PATH`，路径拼错时
+不会创建空库并误报“没有候选”。`doctor --db PATH` 只读检查：目标不存在或 schema
 不兼容时只报告，不创建、不迁移。
 
 离线构建 wheel 和在全新环境中验收的方法见 [docs/INSTALL.md](docs/INSTALL.md)。
@@ -105,7 +107,18 @@ flowgrid-memory doctor --db /absolute/path/to/memory.db
 
 # 在明确指定的持久库中运行受治理 demo
 flowgrid-memory demo --db /absolute/path/to/memory.db
+
+# 人类 Owner 审核队列；该命令会有意打印候选正文和来源证据
+flowgrid-memory review \
+  --db /absolute/path/to/memory.db \
+  --user user-1 \
+  --actor owner@example \
+  --scope project=alpha
 ```
+
+在同一命令中增加 `--record`、`--decision confirm|reject` 与 `--reason`，即可执行
+一次明确的状态变更。决策回执不会重复输出记忆与证据正文。完整边界见
+[本地 Owner 审核](docs/OWNER_REVIEW.md)。
 
 demo 不打印记忆正文、数据库路径或内部 traceback，只证明这条状态链：
 

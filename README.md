@@ -7,7 +7,7 @@ Evidence-first, governed local memory for AI agents.
 
 [中文](README.zh-CN.md) · [Install](docs/INSTALL.md) ·
 [Governed REST](docs/REST_V1.md) · [MCP](docs/MCP.md) ·
-[Local security](docs/LOCAL_SECURITY.md) ·
+[Owner review](docs/OWNER_REVIEW.md) · [Local security](docs/LOCAL_SECURITY.md) ·
 [Data lifecycle](docs/DATA_LIFECYCLE.md) · [Evaluation](docs/EVAL.md) ·
 [Local acceptance](docs/ACCEPTANCE_V0_1.md)
 
@@ -76,9 +76,11 @@ flowgrid-memory doctor --ephemeral
 flowgrid-memory demo --ephemeral
 ```
 
-The product CLI never silently creates `./aml.db`. Every database command
-requires either `--db PATH` or `--ephemeral`. `doctor --db PATH` is read-only:
-it reports a missing or incompatible database without creating or migrating it.
+The product CLI never silently creates `./aml.db`. `doctor` and `demo` require
+either `--db PATH` or `--ephemeral`. `review` requires an existing `--db PATH`,
+so a typo cannot create an empty database and falsely report an empty queue.
+`doctor --db PATH` is read-only: it reports a missing or incompatible database
+without creating or migrating it.
 
 For an offline wheel build and fresh-environment verification, see
 [docs/INSTALL.md](docs/INSTALL.md).
@@ -123,7 +125,18 @@ flowgrid-memory doctor --db /absolute/path/to/memory.db
 
 # Persistent governed demo; intentionally writes to the supplied database
 flowgrid-memory demo --db /absolute/path/to/memory.db
+
+# Human owner queue; this intentionally prints candidates and source evidence
+flowgrid-memory review \
+  --db /absolute/path/to/memory.db \
+  --user user-1 \
+  --actor owner@example \
+  --scope project=alpha
 ```
+
+Use the same `review` command with `--record`, `--decision confirm|reject`, and
+`--reason` to apply one explicit lifecycle transition. Decision receipts do not
+repeat memory or evidence bodies. See [Local owner review](docs/OWNER_REVIEW.md).
 
 The demo proves this state chain without printing the memory body, database
 path, or internal traceback:
