@@ -41,7 +41,7 @@ python3 -m venv /tmp/flowgrid-memory-venv
 /tmp/flowgrid-memory-venv/bin/python -m pip install \
   --no-index --no-deps /tmp/flowgrid-memory-dist/flowgrid_agent_memory-*.whl
 /tmp/flowgrid-memory-venv/bin/python -c \
-  'import aml_retriever; print(aml_retriever.PRODUCT_VERSION)'
+  'import flowgrid_memory; print(flowgrid_memory.PRODUCT_VERSION)'
 /tmp/flowgrid-memory-venv/bin/flowgrid-memory doctor --ephemeral
 /tmp/flowgrid-memory-venv/bin/flowgrid-memory demo --ephemeral
 ```
@@ -123,3 +123,10 @@ candidate/owner-gate behavior, disclosure limits, and stdio trust boundary.
 The governed REST example and exact request contract are documented in
 [REST_V1.md](REST_V1.md). The server accepts only `127.0.0.1` and must not be
 placed behind a public listener.
+
+## Container targets
+
+The default image is the non-networked `cli` target. The optional `mcp` target
+installs the MCP extra and communicates over stdio. No container target exposes
+the governed REST adapter because its verified boundary is a literal loopback
+listener on one trusted host. See [CONTAINER.md](CONTAINER.md).

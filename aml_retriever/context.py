@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from itertools import islice
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
@@ -22,6 +23,15 @@ from .governance import MEMORY_STATES, CurrentStateResult, MemoryRecord
 CONTEXT_STATUSES = frozenset(
     {"ready", "unknown", "conflict", "budget_exceeded", "forbidden"}
 )
+
+# Product-level resource ceilings. These apply even when a caller omits a
+# character budget, so a faulty trusted integration cannot create an unbounded
+# local allocation or repeated-serialization job.
+MAX_CONTEXT_RECORDS = 1_000
+MAX_CONTEXT_ITEM_BYTES = 512 * 1_024
+MAX_CONTEXT_TOTAL_ITEM_BYTES = 6 * 1_024 * 1_024
+MAX_CONTEXT_PACK_BYTES = 8 * 1_024 * 1_024
+MAX_CONTEXT_REQUEST_CHARS = 4 * 1_024 * 1_024
 
 _OPAQUE_RAW_LOCATOR = re.compile(r"^raw_events:raw_[0-9a-f]{24}$")
 _PUBLIC_ITEM_REASONS = {
@@ -185,6 +195,13 @@ class ContextPack:
         }
     )
 
+    _rendered_json: str | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
     def __post_init__(self) -> None:
         if self.status not in CONTEXT_STATUSES:
             raise ValueError(f"unsupported context status: {self.status}")
@@ -210,10 +227,18 @@ class ContextPack:
         }
 
     def to_json(self) -> str:
-        return canonical_json(self.to_dict())
+        cached = self._rendered_json
+        if cached is None:
+            cached = canonical_json(self.to_dict())
+            object.__setattr__(self, "_rendered_json", cached)
+        return cached
 
 
 class _CounterFailure(ValueError):
+    pass
+
+
+class _ContextInputLimit(ValueError):
     pass
 
 
@@ -357,24 +382,62 @@ def _record_item(record: MemoryRecord, *, mode: str, policy: DisclosurePolicy) -
     return item
 
 
-def _public_item_sort_key(item: dict) -> tuple:
+def _public_item_sort_key(
+    item: dict,
+    *,
+    rendered: str | None = None,
+) -> tuple:
     return (
         str(item.get("memory_key", "")),
         str(item.get("memory_type", "")),
         str(item.get("subject", "")),
         canonical_json(item.get("scope", {})),
         str(item.get("id", "")),
-        canonical_json(item),
+        rendered if rendered is not None else canonical_json(item),
     )
+
+
+def _bounded_records(values: object) -> list[object]:
+    """Materialize at most one item beyond the public compiler ceiling."""
+
+    try:
+        iterator = iter(values)
+    except TypeError:
+        return [None]
+    records = list(islice(iterator, MAX_CONTEXT_RECORDS + 1))
+    if len(records) > MAX_CONTEXT_RECORDS:
+        raise _ContextInputLimit("record count exceeds context limit")
+    return records
+
+
+def _public_items(
+    records: list[MemoryRecord],
+    *,
+    mode: str,
+    policy: DisclosurePolicy,
+) -> list[dict]:
+    """Render, size-check, and deterministically order public atomic items."""
+
+    decorated: list[tuple[tuple, dict]] = []
+    total_bytes = 0
+    for record in records:
+        item = _record_item(record, mode=mode, policy=policy)
+        rendered = canonical_json(item)
+        item_bytes = len(rendered.encode("utf-8"))
+        if item_bytes > MAX_CONTEXT_ITEM_BYTES:
+            raise _ContextInputLimit("one context item exceeds its byte limit")
+        total_bytes += item_bytes
+        if total_bytes > MAX_CONTEXT_TOTAL_ITEM_BYTES:
+            raise _ContextInputLimit("context items exceed their aggregate byte limit")
+        decorated.append((_public_item_sort_key(item, rendered=rendered), item))
+    decorated.sort(key=lambda pair: pair[0])
+    return [item for _key, item in decorated]
 
 
 def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> tuple:
     raw_mode = result.mode
     mode = "current" if raw_mode == "ordinary" else raw_mode
-    try:
-        records = list(result.records)
-    except TypeError:
-        records = [None]
+    records = _bounded_records(result.records)
     records_well_formed = all(isinstance(record, MemoryRecord) for record in records)
     completeness_is_consistent = (
         isinstance(result.matched_count, int)
@@ -456,9 +519,10 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
             # Apply the public field allowlist only after lifecycle consistency
             # is proven.  A malicious unknown/candidate fixture is never read
             # into an output item, even transiently.
-            items = sorted(
-                (_record_item(record, mode="current", policy=policy) for record in records),
-                key=_public_item_sort_key,
+            items = _public_items(
+                records,
+                mode="current",
+                policy=policy,
             )
             status = "ready"
             reason = "ready"
@@ -499,9 +563,10 @@ def _normalize_result(result: CurrentStateResult, policy: DisclosurePolicy) -> t
             and result.current_status == "unknown"
         )
         if audit_ready_is_consistent:
-            items = sorted(
-                (_record_item(record, mode="audit", policy=policy) for record in records),
-                key=_public_item_sort_key,
+            items = _public_items(
+                records,
+                mode="audit",
+                policy=policy,
             )
             status = "ready"
             reason = "ready"
@@ -632,6 +697,10 @@ class ContextCompiler:
                 return False
         return True
 
+    @staticmethod
+    def _within_hard_output_limit(pack: ContextPack) -> bool:
+        return len(pack.to_json().encode("utf-8")) <= MAX_CONTEXT_PACK_BYTES
+
     def failure(
         self,
         *,
@@ -701,8 +770,14 @@ class ContextCompiler:
         """Compile an already-authorized current/audit result.
 
         The mandatory envelope is retained even if a tiny budget cannot hold
-        it.  In that case the pack reports ``budget_exceeded`` and abstains;
-        it never emits an empty ``ready`` response.
+        it. In that case the pack reports ``budget_exceeded`` and abstains; it
+        never emits an empty ``ready`` response.
+
+        Character-only selection probes the full prefix once, then uses a
+        binary search for the largest fitting deterministic prefix. An exact
+        token counter is arbitrary host code and has no monotonic-prefix
+        contract, so token selection retains the conservative descending scan
+        under the hard record and byte ceilings.
         """
 
         if not isinstance(result, CurrentStateResult):
@@ -712,19 +787,27 @@ class ContextCompiler:
                 max_tokens=max_tokens,
             )
 
-        (
-            status,
-            abstain,
-            reason,
-            items,
-            gaps,
-            conflicts,
-            owner_gate,
-            policy_count,
-            audit_evidence_count,
-            matched_count,
-            resolver_limit_count,
-        ) = _normalize_result(result, self.disclosure_policy)
+        try:
+            (
+                status,
+                abstain,
+                reason,
+                items,
+                gaps,
+                conflicts,
+                owner_gate,
+                policy_count,
+                audit_evidence_count,
+                matched_count,
+                resolver_limit_count,
+            ) = _normalize_result(result, self.disclosure_policy)
+        except _ContextInputLimit:
+            return self.failure(
+                reason="context_input_limit_exceeded",
+                max_chars=max_chars,
+                max_tokens=max_tokens,
+            )
+
         total_items = len(items)
         error = self.preflight_error(max_chars=max_chars, max_tokens=max_tokens)
         if error:
@@ -749,9 +832,7 @@ class ContextCompiler:
                 ),
             )
 
-        # Try the largest deterministic prefix.  Each candidate is measured as
-        # final JSON, including the changed omitted count and budget metadata.
-        for kept in range(total_items, -1, -1):
+        def finalize_prefix(kept: int) -> ContextPack:
             candidate = ContextPack(
                 status=status,
                 abstain=abstain,
@@ -773,30 +854,89 @@ class ContextCompiler:
                     resolver_limit=resolver_limit_count,
                 ),
             )
-            try:
-                finalized = self._finalize(
-                    candidate,
-                    max_chars=max_chars,
-                    max_tokens=max_tokens,
-                )
-            except _CounterFailure:
-                return self.failure(
-                    reason="token_counter_unavailable",
-                    max_chars=max_chars,
-                    max_tokens=max_tokens,
-                    owner_gate_required=owner_gate,
-                    gaps=gaps,
-                    conflicts=conflicts,
-                    completeness=candidate.completeness,
-                    omitted=candidate.omitted,
-                )
-            if not self._fits(finalized):
-                continue
-            if total_items and kept == 0:
-                # The envelope fits but no complete memory item does.  Calling
-                # that ready would be indistinguishable from successful recall.
-                break
-            return finalized
+            return self._finalize(
+                candidate,
+                max_chars=max_chars,
+                max_tokens=max_tokens,
+            )
+
+        try:
+            if max_tokens is None:
+                # No-budget compilation and the common full-fit case remain a
+                # single probe. Only a rejecting character or hard byte limit
+                # enters the logarithmic search.
+                full = finalize_prefix(total_items)
+                full_within_hard_limit = self._within_hard_output_limit(full)
+                if full_within_hard_limit and self._fits(full):
+                    return full
+                if not full_within_hard_limit and max_chars is None:
+                    return self.failure(
+                        reason="context_output_limit_exceeded",
+                        max_chars=max_chars,
+                        max_tokens=max_tokens,
+                        owner_gate_required=owner_gate,
+                        gaps=gaps,
+                        conflicts=conflicts,
+                        completeness=_completeness(
+                            matched_count=matched_count,
+                            returned_count=0,
+                            resolver_limit=resolver_limit_count,
+                            budget=total_items,
+                        ),
+                        omitted=_omitted(
+                            budget=total_items,
+                            policy=policy_count,
+                            audit_evidence=audit_evidence_count,
+                            resolver_limit=resolver_limit_count,
+                        ),
+                    )
+
+                low = 0
+                high = total_items - 1
+                best_kept = -1
+                best_pack: ContextPack | None = None
+                while low <= high:
+                    kept = (low + high) // 2
+                    candidate = finalize_prefix(kept)
+                    if self._within_hard_output_limit(candidate) and self._fits(candidate):
+                        best_kept = kept
+                        best_pack = candidate
+                        low = kept + 1
+                    else:
+                        high = kept - 1
+                if best_pack is not None and (not total_items or best_kept > 0):
+                    return best_pack
+            else:
+                for kept in range(total_items, -1, -1):
+                    candidate = finalize_prefix(kept)
+                    if not self._within_hard_output_limit(candidate):
+                        continue
+                    if not self._fits(candidate):
+                        continue
+                    if total_items and kept == 0:
+                        break
+                    return candidate
+        except _CounterFailure:
+            return self.failure(
+                reason="token_counter_unavailable",
+                max_chars=max_chars,
+                max_tokens=max_tokens,
+                owner_gate_required=owner_gate,
+                gaps=gaps,
+                conflicts=conflicts,
+                completeness=_completeness(
+                    matched_count=matched_count,
+                    returned_count=0,
+                    resolver_limit=resolver_limit_count,
+                    budget=total_items,
+                ),
+                omitted=_omitted(
+                    budget=total_items,
+                    policy=policy_count,
+                    audit_evidence=audit_evidence_count,
+                    resolver_limit=resolver_limit_count,
+                ),
+            )
 
         return self.failure(
             reason="budget_exceeded",
@@ -822,6 +962,11 @@ class ContextCompiler:
 
 __all__ = [
     "CONTEXT_STATUSES",
+    "MAX_CONTEXT_RECORDS",
+    "MAX_CONTEXT_ITEM_BYTES",
+    "MAX_CONTEXT_TOTAL_ITEM_BYTES",
+    "MAX_CONTEXT_PACK_BYTES",
+    "MAX_CONTEXT_REQUEST_CHARS",
     "TokenCounter",
     "ContextPack",
     "ContextCompiler",

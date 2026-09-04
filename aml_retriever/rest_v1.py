@@ -36,7 +36,11 @@ from .auth import (
 from .extraction import ExtractionConflict, ExtractionError
 from .facade import FlowGridMemory
 from .governance import GovernanceConflict, GovernanceError
-from .context import ContextCompiler
+from .context import (
+    MAX_CONTEXT_RECORDS,
+    MAX_CONTEXT_REQUEST_CHARS,
+    ContextCompiler,
+)
 
 
 REST_SCHEMA = "flowgrid.rest/v1"
@@ -653,7 +657,7 @@ class GovernedRestAdapter:
             requested_scope=_scope(data.get("scope")),
             operation=OPERATION_READ_AUDIT if mode == "audit" else OPERATION_READ_CURRENT,
         )
-        max_records = _positive_int(data.get("max_records", 100), maximum=10_000)
+        max_records = _positive_int(data.get("max_records", 100), maximum=MAX_CONTEXT_RECORDS)
         result = self._memory_active().query_memory(
             user_id=user_id,
             access_context=access.access_context,
@@ -713,7 +717,7 @@ class GovernedRestAdapter:
         )
         max_chars = data.get("max_chars")
         if max_chars is not None:
-            max_chars = _nonnegative_int(max_chars, maximum=16 * 1_048_576)
+            max_chars = _nonnegative_int(max_chars, maximum=MAX_CONTEXT_REQUEST_CHARS)
         pack = self._memory_active().compile_context(
             user_id=user_id,
             access_context=access.access_context,
@@ -722,7 +726,7 @@ class GovernedRestAdapter:
             mode=mode,
             scope=access.effective_scope,
             as_of=_optional_string(data, "as_of"),
-            max_records=_positive_int(data.get("max_records", 100), maximum=10_000),
+            max_records=_positive_int(data.get("max_records", 100), maximum=MAX_CONTEXT_RECORDS),
             max_chars=max_chars,
             max_tokens=None,
             disclosure_policy=access.disclosure_policy,
