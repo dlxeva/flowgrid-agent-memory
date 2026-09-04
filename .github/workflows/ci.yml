@@ -41,12 +41,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python -m pip install 'mcp>=2,<3' build
+      - name: Build and verify isolated wheel
+        run: |
+          python -m build
+          python scripts/smoke_wheel.py dist/*.whl
       - name: Build and run default CLI target
         run: |
           docker build --target cli -t flowgrid-agent-memory:ci .
           docker run --rm flowgrid-agent-memory:ci
           docker run --rm flowgrid-agent-memory:ci demo --ephemeral
-      - name: Build and inspect MCP stdio target
+      - name: Build and exercise MCP stdio target
         run: |
           docker build --target mcp -t flowgrid-agent-memory:mcp-ci .
-          docker run --rm flowgrid-agent-memory:mcp-ci --help
+          python scripts/smoke_mcp.py --container-image flowgrid-agent-memory:mcp-ci
