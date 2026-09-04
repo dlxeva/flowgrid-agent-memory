@@ -14,6 +14,7 @@ from .access import PERMISSION_AUDIT, PERMISSION_READ, AccessContext, Disclosure
 from .extraction import DIRECTIVE_PREFIX
 from .facade import FlowGridMemory
 from .migrations import SchemaReport, inspect_schema
+from .owner_review import OwnerReviewSession
 
 
 EXIT_OK = 0
@@ -303,6 +304,51 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _parse_review_scope(values: list[str]) -> dict[str, str]:
+    scope: dict[str, str] = {}
+    for raw in values:
+        if not isinstance(raw, str) or "=" not in raw:
+            raise ValueError("review scope must use KEY=VALUE")
+        key, value = raw.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if not key or not value or key in scope:
+            raise ValueError("review scope is invalid")
+        scope[key] = value
+    return scope
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    if args.db == ":memory:" or not Path(args.db).is_file():
+        # A typo must not create a fresh empty database and falsely
+        # report that no candidates require review.
+        raise ValueError("review requires an existing database")
+    scope = _parse_review_scope(args.scope)
+    if args.decision is None and args.reason is not None:
+        raise ValueError("reason requires a decision")
+    if args.decision is not None and (args.record is None or args.reason is None):
+        raise ValueError("decision requires record and reason")
+    with FlowGridMemory(db_path=args.db) as memory:
+        review = OwnerReviewSession(
+            memory=memory,
+            user_id=args.user,
+            actor=args.actor,
+            scope=scope,
+        )
+        if args.decision is None:
+            result = review.list_pending(
+                limit=args.limit,
+                record_id=args.record,
+            )
+        else:
+            result = review.decide(
+                record_id=args.record,
+                decision=args.decision,
+                reason=args.reason,
+            )
+    _emit(result.to_dict())
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="flowgrid-memory",
@@ -329,6 +375,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_database_choice(demo)
     demo.set_defaults(func=_cmd_demo)
+
+    review = subcommands.add_parser(
+        "review", help="inspect and decide exact-scope owner candidates"
+    )
+    review.add_argument(
+        "--db", required=True, metavar="PATH", help="existing SQLite database path"
+    )
+    review.add_argument("--user", required=True, help="concrete governed user ID")
+    review.add_argument("--actor", required=True, help="owner identity written to audit events")
+    review.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="exact review scope; repeat for multiple fields",
+    )
+    review.add_argument(
+        "--limit", type=int, default=20, help="queue item limit (1-100)"
+    )
+    review.add_argument(
+        "--record", default=None, help="inspect or decide one pending record"
+    )
+    review.add_argument(
+        "--decision", choices=("confirm", "reject"), default=None
+    )
+    review.add_argument(
+        "--reason", default=None, help="required audit reason for a decision"
+    )
+    review.set_defaults(func=_cmd_review)
     return parser
 
 
