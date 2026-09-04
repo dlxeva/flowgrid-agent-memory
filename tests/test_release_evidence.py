@@ -34,6 +34,7 @@ class TestReleaseEvidence(unittest.TestCase):
                     "https://github.com/dlxeva/flowgrid-agent-memory/actions/runs/1",
                     "--tests-passed",
                     "--fresh-install-passed",
+                    "--container-passed",
                 ],
                 check=True,
             )
@@ -47,6 +48,14 @@ class TestReleaseEvidence(unittest.TestCase):
             acceptance = json.loads((output / "acceptance.json").read_text())
             self.assertEqual(acceptance["commit"], "a" * 40)
             self.assertEqual(len(acceptance["artifacts"]), 2)
+            self.assertEqual(
+                acceptance["gates"]["container_contract"]["status"],
+                "passed",
+            )
+            self.assertEqual(
+                acceptance["gates"]["container_contract"]["targets"],
+                ["cli", "mcp"],
+            )
             sbom = json.loads((output / "sbom.spdx.json").read_text())
             self.assertEqual(sbom["spdxVersion"], "SPDX-2.3")
             self.assertEqual(len(sbom["files"]), 2)
