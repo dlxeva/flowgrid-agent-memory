@@ -42,6 +42,10 @@ The report has a stable `flowgrid.extractor-conformance/v1` schema. Each case
 contains only `id`, `status`, and a fixed `code`; neither source bodies, proposal
 content, exception messages, nor tracebacks are emitted.
 
+The top-level `passed` field reports only `security_contract`. Optional quality
+probes are reported separately in `behavioral_quality_passed` and never grant or
+deny authorization.
+
 ## Claim and execution boundary
 
 Passing finite synthetic probes does not certify an extractor as trusted,

@@ -113,10 +113,44 @@ class TestConformanceHarness(unittest.TestCase):
             include_behavioral_quality=False,
         )
         self.assertEqual(report.behavioral_quality, ())
+        self.assertIsNone(report.behavioral_quality_passed)
         self.assertIn(
             "run_extractor_conformance",
             flowgrid_memory.__all__,
         )
+
+    def test_optional_behavioral_failure_does_not_change_security_verdict(self):
+        def always_proposes(request):
+            source = request.raw_events[0]
+            return [
+                ProposalDraft(
+                    memory_key="test.preference",
+                    memory_type="preference",
+                    subject="$user",
+                    content=source.content,
+                    evidence_spans=(EvidenceSpan(
+                        source.id, 0, len(source.content), source.content
+                    ),),
+                )
+            ]
+
+        report = run_extractor_conformance(
+            IDENTITY,
+            always_proposes,
+            include_behavioral_quality=True,
+        )
+        self.assertTrue(report.passed)
+        self.assertFalse(report.behavioral_quality_passed)
+
+    def test_source_identity_bounds_and_quote_are_independent_cases(self):
+        report = run_extractor_conformance(IDENTITY, conformant)
+        cases = {case.id: case for case in report.security_contract}
+        for case_id in (
+            "core.source_span_identity",
+            "core.source_span_bounds",
+            "core.source_span_quote",
+        ):
+            self.assertEqual(cases[case_id].status, "pass")
 
 
 if __name__ == "__main__":

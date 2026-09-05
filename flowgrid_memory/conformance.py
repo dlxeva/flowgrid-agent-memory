@@ -64,15 +64,21 @@ class ConformanceReport:
 
     @property
     def passed(self) -> bool:
-        return all(
-            case.status == "pass"
-            for case in self.security_contract + self.behavioral_quality
-        )
+        """Whether the security contract passed; quality is never an auth gate."""
+
+        return all(case.status == "pass" for case in self.security_contract)
+
+    @property
+    def behavioral_quality_passed(self) -> bool | None:
+        if not self.behavioral_quality:
+            return None
+        return all(case.status == "pass" for case in self.behavioral_quality)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": REPORT_SCHEMA,
             "passed": self.passed,
+            "behavioral_quality_passed": self.behavioral_quality_passed,
             "security_contract": [case.to_dict() for case in self.security_contract],
             "behavioral_quality": [case.to_dict() for case in self.behavioral_quality],
         }
@@ -263,6 +269,50 @@ def _span_bounds_case() -> ConformanceCase:
     )
 
 
+def _span_source_identity_case() -> ConformanceCase:
+    def unknown_source(request):
+        proposal = _valid_proposal(request).to_dict()
+        proposal["evidence_spans"] = [
+            {
+                "source_event_id": "raw_missing_conformance_source",
+                "start": 0,
+                "end": 1,
+                "quote": request.raw_events[0].content[:1],
+            }
+        ]
+        return [proposal]
+
+    return _rejection_case(
+        case_id="core.source_span_identity",
+        name="source-identity",
+        function=unknown_source,
+        expected=ExtractionValidationError,
+        ok_code="SOURCE_ID_REJECTED",
+    )
+
+
+def _span_quote_case() -> ConformanceCase:
+    def mismatched_quote(request):
+        proposal = _valid_proposal(request).to_dict()
+        proposal["evidence_spans"] = [
+            {
+                "source_event_id": request.raw_events[0].id,
+                "start": 0,
+                "end": 1,
+                "quote": "X",
+            }
+        ]
+        return [proposal]
+
+    return _rejection_case(
+        case_id="core.source_span_quote",
+        name="source-quote",
+        function=mismatched_quote,
+        expected=ExtractionValidationError,
+        ok_code="SOURCE_QUOTE_REJECTED",
+    )
+
+
 def _governance_fields_case() -> ConformanceCase:
     def forbidden_fields(request):
         proposal = _valid_proposal(request).to_dict()
@@ -312,7 +362,11 @@ def _exception_sanitization_case() -> ConformanceCase:
                 extractor=extractor,
             )
     except ExtractorInvocationError as exc:
-        sanitized = sentinel not in str(exc) and exc.__cause__ is None
+        sanitized = (
+            sentinel not in str(exc)
+            and exc.__cause__ is None
+            and exc.__context__ is None
+        )
     except Exception:
         sanitized = False
     return _case(
@@ -474,6 +528,8 @@ def run_extractor_conformance(
         output_case,
         _candidate_only_case(),
         _span_bounds_case(),
+        _span_source_identity_case(),
+        _span_quote_case(),
         _governance_fields_case(),
         _input_integrity_case(),
         _exception_sanitization_case(),
