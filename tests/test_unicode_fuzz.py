@@ -1,4 +1,8 @@
-"""Deterministic Unicode properties for both lexical search implementations."""
+"""Deterministic Unicode query properties for both lexical search paths.
+
+The corpus exercises tokenizer, MATCH construction, and search-query handling.
+It does not claim that every Unicode scalar sequence is valid stored content.
+"""
 from __future__ import annotations
 
 import random
@@ -56,7 +60,7 @@ class TestUnicodeLexicalProperties(unittest.TestCase):
         self.assertEqual(len(first), CASES)
         self.assertTrue(all(isinstance(value, str) and len(value) <= MAX_LENGTH for value in first))
 
-    def test_legacy_tokenizer_match_and_sqlite_never_raise(self):
+    def test_legacy_unicode_queries_do_not_raise_or_build_malformed_match(self):
         with Store(":memory:") as store:
             store.add(
                 request_id="unicode-fuzz-source",
@@ -73,7 +77,7 @@ class TestUnicodeLexicalProperties(unittest.TestCase):
                     result = store.search(user_id="u1", query=value, top_k=10)
                     self.assertLessEqual(len(result.results), 10)
 
-    def test_product_tokenizer_match_and_sqlite_never_raise(self):
+    def test_product_unicode_queries_do_not_raise_or_build_malformed_match(self):
         database = RetrieverDB(RetrieverConfig(db_path=":memory:"))
         try:
             database.add(
