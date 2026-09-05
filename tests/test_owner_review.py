@@ -175,11 +175,12 @@ class TestOwnerReviewSession(OwnerReviewCase):
             key="project.evidence",
             scope={"project": "alpha"},
         )
-        with sqlite3.connect(self.path) as con:
+        with contextlib.closing(sqlite3.connect(self.path)) as con:
             con.execute(
                 "DELETE FROM raw_events WHERE id=?",
                 (record.source_event_ids[0],),
             )
+            con.commit()
 
         session = self.session(scope={"project": "alpha"})
         queue = session.list_pending(record_id=record.id)

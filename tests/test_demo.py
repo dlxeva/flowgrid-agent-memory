@@ -60,7 +60,7 @@ class TestGovernedDemoScript(unittest.TestCase):
                         row[0]
                         for row in con.execute(
                             "SELECT to_status FROM memory_state_events WHERE record_id=? "
-                            "ORDER BY transitioned_at,id",
+                            "ORDER BY transitioned_at,rowid",
                             (record_id,),
                         ).fetchall()
                     ]

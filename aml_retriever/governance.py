@@ -20,7 +20,7 @@ import re
 import sqlite3
 import uuid
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 MEMORY_STATES = frozenset(
@@ -201,6 +201,45 @@ class CurrentStateResult:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _next_state_instant(con: sqlite3.Connection) -> str:
+    """Return a wall-clock instant strictly after the last appended state event.
+
+    Windows clocks can repeat timestamps across adjacent transitions.  The
+    audit model uses timestamps for historical cutoffs, so preserve a strict
+    append order even when the host clock has not advanced.
+    """
+
+    current = datetime.fromisoformat(_normalize_instant(utc_now(), field="now"))
+    latest = con.execute(
+        "SELECT transitioned_at FROM memory_state_events ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    if latest is not None:
+        previous = datetime.fromisoformat(
+            _normalize_instant(latest["transitioned_at"], field="transitioned_at")
+        )
+        if current <= previous:
+            current = previous + timedelta(microseconds=1)
+    return current.isoformat()
+
+
+def _current_state_instant(con: sqlite3.Connection, *, user_id: str) -> str:
+    """Include the newest logical event when no historical cutoff was requested."""
+
+    current = datetime.fromisoformat(_normalize_instant(utc_now(), field="now"))
+    latest = con.execute(
+        "SELECT transitioned_at FROM memory_state_events "
+        "WHERE user_id=? ORDER BY rowid DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if latest is not None:
+        event_time = datetime.fromisoformat(
+            _normalize_instant(latest["transitioned_at"], field="transitioned_at")
+        )
+        if event_time > current:
+            current = event_time
+    return current.isoformat()
 
 
 def _normalize_instant(value: str, *, field: str) -> str:
@@ -716,7 +755,7 @@ def create_memory_record(
                 "superseded record must share user_id, memory_key, memory_type, subject, and scope"
             )
 
-    now = utc_now()
+    now = _next_state_instant(con)
     rid = record_id or f"mem_{uuid.uuid4().hex}"
     con.execute(
         "INSERT INTO memory_records"
@@ -809,7 +848,7 @@ def transition_memory_record(
             raise GovernanceError("slot-related records must share the exact slot identity")
     latest = con.execute(
         "SELECT to_status FROM memory_state_events WHERE record_id=? AND user_id=? "
-        "ORDER BY transitioned_at DESC,id DESC LIMIT 1",
+        "ORDER BY transitioned_at DESC,rowid DESC LIMIT 1",
         (record_id, user_id),
     ).fetchone()
     current = latest["to_status"] if latest is not None else row["status"]
@@ -858,7 +897,7 @@ def transition_memory_record(
                 "assistant, third-party, or inferred preference evidence cannot be promoted"
             )
 
-    now = utc_now()
+    now = _next_state_instant(con)
     supersedes_id = row["supersedes_record_id"]
     if (
         target_status == "confirmed"
@@ -883,7 +922,7 @@ def transition_memory_record(
         for candidate in same_slot:
             state_row = con.execute(
                 "SELECT to_status FROM memory_state_events WHERE record_id=? AND user_id=? "
-                "ORDER BY transitioned_at DESC,id DESC LIMIT 1",
+                "ORDER BY transitioned_at DESC,rowid DESC LIMIT 1",
                 (candidate["id"], user_id),
             ).fetchone()
             candidate_status = state_row["to_status"] if state_row is not None else candidate["status"]
@@ -919,7 +958,7 @@ def transition_memory_record(
             ).fetchone()
             prior_state = con.execute(
                 "SELECT to_status FROM memory_state_events WHERE record_id=? AND user_id=? "
-                "ORDER BY transitioned_at DESC,id DESC LIMIT 1",
+                "ORDER BY transitioned_at DESC,rowid DESC LIMIT 1",
                 (supersedes_id, user_id),
             ).fetchone()
             authoritative_prior = (
@@ -1075,7 +1114,9 @@ def query_current_state(
         raise GovernanceError("max_records must be > 0")
     normalized_scope, query_scope_json = _json_object(scope, user_id=user_id)
     cutoff = (
-        _normalize_instant(as_of, field="as_of") if as_of is not None else utc_now()
+        _normalize_instant(as_of, field="as_of")
+        if as_of is not None
+        else _current_state_instant(con, user_id=user_id)
     )
     clauses = ["user_id=?"]
     params: list[object] = [user_id]
@@ -1113,7 +1154,7 @@ def query_current_state(
         for event_row in con.execute(
             f"SELECT * FROM memory_state_events "
             f"WHERE user_id=? AND record_id IN ({placeholders}) AND transitioned_at<=? "
-            f"ORDER BY transitioned_at,id",
+            f"ORDER BY transitioned_at,rowid",
             (user_id, *record_ids_all, cutoff),
         ).fetchall():
             state_history_by_id.setdefault(event_row["record_id"], []).append(event_row)
@@ -1167,7 +1208,7 @@ def query_current_state(
                 state_event_from_row(row)
                 for row in con.execute(
                     f"SELECT * FROM memory_state_events WHERE user_id=? AND record_id IN ({placeholders}) "
-                    "AND transitioned_at<=? ORDER BY transitioned_at,id",
+                    "AND transitioned_at<=? ORDER BY transitioned_at,rowid",
                     (user_id, *record_ids, cutoff),
                 ).fetchall()
             ]

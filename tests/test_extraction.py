@@ -590,6 +590,7 @@ class TestIdempotencyAndCallable(ExtractionCase):
                 extractor=CallableMemoryExtractor(identity, fail),
             )
         self.assertNotIn(secret, str(ctx.exception))
+        self.assertIsNone(ctx.exception.__context__)
         self.assertEqual(self.service.db.query("SELECT COUNT(*) FROM extraction_receipts")[0][0], 0)
         calls = []
         recovered = self.compile(
@@ -613,6 +614,7 @@ class TestIdempotencyAndCallable(ExtractionCase):
                 extractor=CallableMemoryExtractor(timeout_identity, host_timeout),
             )
         self.assertNotIn(secret, str(timeout_ctx.exception))
+        self.assertIsNone(timeout_ctx.exception.__context__)
         self.assertEqual(
             self.service.db.query(
                 "SELECT COUNT(*) FROM extraction_receipts WHERE idempotency_key='retry-timeout'"
@@ -645,6 +647,7 @@ class TestIdempotencyAndCallable(ExtractionCase):
         self.assertEqual(str(ctx.exception), "extractor invocation failed")
         self.assertNotIn(secret, str(ctx.exception))
         self.assertIsNone(ctx.exception.__cause__)
+        self.assertIsNone(ctx.exception.__context__)
         self.assertEqual(
             self.service.db.query("SELECT COUNT(*) FROM extraction_receipts")[0][0],
             0,

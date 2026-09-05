@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -120,7 +121,7 @@ class TransitionLookupHttpCase(unittest.TestCase):
         return body
 
     def record_status(self, record_id: str) -> str:
-        with sqlite3.connect(self.db_path) as con:
+        with closing(sqlite3.connect(self.db_path)) as con:
             row = con.execute(
                 "SELECT status FROM memory_records WHERE id=?",
                 (record_id,),
@@ -220,7 +221,7 @@ class TestDirectRestTransitionLookup(TransitionLookupHttpCase):
         )
         old_instant = "2000-01-01T00:00:00+00:00"
         noise_count = 10_001
-        with sqlite3.connect(self.db_path) as con:
+        with closing(sqlite3.connect(self.db_path)) as con:
             con.executemany(
                 """INSERT INTO memory_records(
                     id,user_id,memory_key,memory_type,subject,content,status,

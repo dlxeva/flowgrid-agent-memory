@@ -98,6 +98,20 @@ with FlowGridMemory(db_path=":memory:") as memory:
 会如实产生 0 个提案，不假装具备 NLU。宿主可以注入自己的提取器，但核心仍负责绑定
 scope/authority、校验证据 span，并只持久化 candidate。
 
+宿主提取器作者可在集成前运行零依赖 conformance kit。它复用真实生产边界并返回稳定、
+脱敏的 JSON 报告：
+
+```python
+from flowgrid_memory import ExtractorIdentity, run_extractor_conformance
+
+identity = ExtractorIdentity("example", "1", "host-callable")
+report = run_extractor_conformance(identity, extract)
+assert report.passed, report.to_json()
+```
+
+有限合成探针不构成可信认证，同进程测试也无法终止无限循环。完整边界见
+[提取器 conformance kit](docs/EXTRACTOR_CONFORMANCE.md)。
+
 ## 本地 CLI
 
 ```bash

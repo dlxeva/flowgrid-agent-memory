@@ -342,7 +342,7 @@ class TestOfficialSDKClient(unittest.IsolatedAsyncioTestCase):
                 },
             )
             self.assertFalse(created.is_error)
-        with sqlite3.connect(shared_db) as connection:
+        with contextlib.closing(sqlite3.connect(shared_db)) as connection:
             before = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         async with self.Client(u2_server) as client:
             denied = await client.call_tool(
@@ -355,7 +355,7 @@ class TestOfficialSDKClient(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(denied.is_error)
             self.assertEqual(denied.structured_content["error"]["code"], "access_denied")
-        with sqlite3.connect(shared_db) as connection:
+        with contextlib.closing(sqlite3.connect(shared_db)) as connection:
             after = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         self.assertEqual(before, after)
 
