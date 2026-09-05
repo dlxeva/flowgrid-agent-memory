@@ -143,10 +143,12 @@ class TestOfflineWheel(unittest.TestCase):
     def test_fresh_venv_isolated_import_cli_and_demo(self):
         venv = self.root / "fresh-venv"
         _run([sys.executable, "-m", "venv", str(venv)], cwd=self.build_cwd, env=self.env)
-        python = venv / "bin" / "python"
-        cli = venv / "bin" / "flowgrid-memory"
-        mcp_cli = venv / "bin" / "flowgrid-memory-mcp"
-        rest_cli = venv / "bin" / "flowgrid-memory-rest"
+        binary = venv / ("Scripts" if os.name == "nt" else "bin")
+        python = binary / ("python.exe" if os.name == "nt" else "python")
+        suffix = ".exe" if os.name == "nt" else ""
+        cli = binary / f"flowgrid-memory{suffix}"
+        mcp_cli = binary / f"flowgrid-memory-mcp{suffix}"
+        rest_cli = binary / f"flowgrid-memory-rest{suffix}"
         _run(
             [
                 str(python),

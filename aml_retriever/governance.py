@@ -809,7 +809,7 @@ def transition_memory_record(
             raise GovernanceError("slot-related records must share the exact slot identity")
     latest = con.execute(
         "SELECT to_status FROM memory_state_events WHERE record_id=? AND user_id=? "
-        "ORDER BY transitioned_at DESC,id DESC LIMIT 1",
+        "ORDER BY transitioned_at DESC,rowid DESC LIMIT 1",
         (record_id, user_id),
     ).fetchone()
     current = latest["to_status"] if latest is not None else row["status"]
@@ -883,7 +883,7 @@ def transition_memory_record(
         for candidate in same_slot:
             state_row = con.execute(
                 "SELECT to_status FROM memory_state_events WHERE record_id=? AND user_id=? "
-                "ORDER BY transitioned_at DESC,id DESC LIMIT 1",
+                "ORDER BY transitioned_at DESC,rowid DESC LIMIT 1",
                 (candidate["id"], user_id),
             ).fetchone()
             candidate_status = state_row["to_status"] if state_row is not None else candidate["status"]
@@ -919,7 +919,7 @@ def transition_memory_record(
             ).fetchone()
             prior_state = con.execute(
                 "SELECT to_status FROM memory_state_events WHERE record_id=? AND user_id=? "
-                "ORDER BY transitioned_at DESC,id DESC LIMIT 1",
+                "ORDER BY transitioned_at DESC,rowid DESC LIMIT 1",
                 (supersedes_id, user_id),
             ).fetchone()
             authoritative_prior = (
@@ -1113,7 +1113,7 @@ def query_current_state(
         for event_row in con.execute(
             f"SELECT * FROM memory_state_events "
             f"WHERE user_id=? AND record_id IN ({placeholders}) AND transitioned_at<=? "
-            f"ORDER BY transitioned_at,id",
+            f"ORDER BY transitioned_at,rowid",
             (user_id, *record_ids_all, cutoff),
         ).fetchall():
             state_history_by_id.setdefault(event_row["record_id"], []).append(event_row)
@@ -1167,7 +1167,7 @@ def query_current_state(
                 state_event_from_row(row)
                 for row in con.execute(
                     f"SELECT * FROM memory_state_events WHERE user_id=? AND record_id IN ({placeholders}) "
-                    "AND transitioned_at<=? ORDER BY transitioned_at,id",
+                    "AND transitioned_at<=? ORDER BY transitioned_at,rowid",
                     (user_id, *record_ids, cutoff),
                 ).fetchall()
             ]
