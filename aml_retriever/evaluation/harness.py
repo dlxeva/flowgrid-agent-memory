@@ -161,8 +161,18 @@ def run_stage(stage: str, flags: dict, dataset: Dataset, *, workdir: str,
         for query in dataset.queries:
             gold = {id_map[g] for g in query.gold if g in id_map}
             distractors = {id_map[d] for d in query.distractors if d in id_map}
-            recall_text = query.text
-            query_tokens = features.query_tokens(recall_text, db.config.max_query_tokens)
+            reference_time = (
+                datetime.fromisoformat(query.reference_time)
+                if query.reference_time else None
+            )
+            started = time.perf_counter()
+            result = db.search(user_id=query.user_id, query=query.text, top_k=top_k,
+                               reference_time=reference_time)
+            latencies.append((time.perf_counter() - started) * 1000.0)
+            hits = result.results
+            # Keep diagnostics outside the timed Search and after it, so the
+            # same FTS lookup cannot prewarm the measurement being reported.
+            query_tokens = features.query_tokens(query.text, db.config.max_query_tokens)
             with db.connection() as con:
                 raw_candidates = db._fts_candidates(con, query.user_id, query_tokens)
                 candidate_records = db._load_records(con, query.user_id, raw_candidates)
@@ -174,15 +184,6 @@ def run_stage(stage: str, flags: dict, dataset: Dataset, *, workdir: str,
             candidate_recall = (
                 len(gold & candidate_sources) / float(len(gold)) if gold else math.nan
             )
-            reference_time = (
-                datetime.fromisoformat(query.reference_time)
-                if query.reference_time else None
-            )
-            started = time.perf_counter()
-            result = db.search(user_id=query.user_id, query=query.text, top_k=top_k,
-                               reference_time=reference_time)
-            latencies.append((time.perf_counter() - started) * 1000.0)
-            hits = result.results
             rows.append({
                 "kind": query.kind,
                 "difficulty": query.difficulty,
