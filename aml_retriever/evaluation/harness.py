@@ -11,7 +11,9 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
+from .. import features
 from ..config import RetrieverConfig, DEFAULT_FLAGS, vector_backend_available
 from ..retriever import RetrieverDB
 from . import metrics as M
@@ -34,6 +36,7 @@ _L7 = {**_L5, "vector": True}                 # 可选向量路（依赖不可�
 _L8 = {**_L5, "supersession": True}           # 候选组：成对覆写检测
 _L9 = {**_L8, "supersession_update_guard": True}  # v1.1 默认：覆写 + 更新保护
 _L10 = {**_L9, "preference_role_boost": True}     # 候选：再加用户偏好证据
+_L11 = {**_L9, "relative_time": True}              # 候选：显式锚点相对时间窗
 
 # L0→L5 是 v1.0 累进主线；v1.1 在 L5 上加入受保护覆写形成 L9。
 # L6/L8 是**对照组而非推荐档**：它们分别量化负增益与未受保护的安全代价。
@@ -49,6 +52,7 @@ ABLATION_LADDER: list[tuple[str, dict]] = [
     ("L8_supersession_ctrl",    _L8),
     ("L9_guarded_supersession", _L9),
     ("L10_preference_ctrl",     _L10),
+    ("L11_relative_time_ctrl",  _L11),
 ]
 
 # 主线档位（累进），对照组不参与「只增不减」检查
@@ -157,8 +161,26 @@ def run_stage(stage: str, flags: dict, dataset: Dataset, *, workdir: str,
         for query in dataset.queries:
             gold = {id_map[g] for g in query.gold if g in id_map}
             distractors = {id_map[d] for d in query.distractors if d in id_map}
+            recall_text = query.text
+            query_tokens = features.query_tokens(recall_text, db.config.max_query_tokens)
+            with db.connection() as con:
+                raw_candidates = db._fts_candidates(con, query.user_id, query_tokens)
+                candidate_records = db._load_records(con, query.user_id, raw_candidates)
+            candidate_sources = {
+                source_id
+                for record in candidate_records
+                for source_id in record.get("source_ids", [])
+            }
+            candidate_recall = (
+                len(gold & candidate_sources) / float(len(gold)) if gold else math.nan
+            )
+            reference_time = (
+                datetime.fromisoformat(query.reference_time)
+                if query.reference_time else None
+            )
             started = time.perf_counter()
-            result = db.search(user_id=query.user_id, query=query.text, top_k=top_k)
+            result = db.search(user_id=query.user_id, query=query.text, top_k=top_k,
+                               reference_time=reference_time)
             latencies.append((time.perf_counter() - started) * 1000.0)
             hits = result.results
             rows.append({
@@ -169,6 +191,7 @@ def run_stage(stage: str, flags: dict, dataset: Dataset, *, workdir: str,
                 "mrr": M.reciprocal_rank(hits, gold),
                 "leak@10": M.distractor_leak_at_k(hits, distractors, 10),
                 "returned": len(hits),
+                "candidate_recall@max": candidate_recall,
             })
 
         def agg(subset: list[dict]) -> dict:
@@ -181,6 +204,9 @@ def run_stage(stage: str, flags: dict, dataset: Dataset, *, workdir: str,
                 "mrr": _round(M.mean([r["mrr"] for r in subset])),
                 "distractor_leak@10": _round(M.mean([r["leak@10"] for r in subset])),
                 "avg_returned": _round(M.mean([float(r["returned"]) for r in subset]), 2),
+                "candidate_recall@max": _round(M.mean(
+                    [r["candidate_recall@max"] for r in subset]
+                )),
             }
 
         scored = [r for r in rows if not math.isnan(r["recall@100"])]
@@ -258,9 +284,11 @@ def run_ladder(dataset: Dataset, *, workdir: str | None = None,
 # ---------------------------------------------------------------------------
 
 # 参与跨 seed 聚合的标量指标
-_OVERALL_KEYS = ("recall@20", "recall@100", "mrr", "distractor_leak@10", "avg_returned")
+_OVERALL_KEYS = ("recall@20", "recall@100", "mrr", "distractor_leak@10",
+                 "avg_returned", "candidate_recall@max")
 _LATENCY_KEYS = ("p50_ms", "p95_ms", "p99_ms", "max_ms")
-_CROSS_KEYS = ("recall@20", "recall@100", "mrr", "distractor_leak@10")
+_CROSS_KEYS = ("recall@20", "recall@100", "mrr", "distractor_leak@10",
+               "candidate_recall@max")
 
 
 def _collect(values: list[float]) -> dict | None:

@@ -57,7 +57,8 @@ CHITCHAT = [
 ]
 
 DIFFICULTIES = ("plain", "paraphrase", "mixed")
-SUITES = ("classic", "v11")
+SUITES = ("classic", "v11", "relative_time")
+RELATIVE_TIME_AS_OF = "2025-11-19T12:00:00+00:00"
 
 
 @dataclass
@@ -69,6 +70,8 @@ class Query:
     text: str
     gold: list[str] = field(default_factory=list)
     distractors: list[str] = field(default_factory=list)
+    # 仅供离线相对时间代理集使用；生产 Search 不从请求体接受该字段。
+    reference_time: str = ""
 
 
 @dataclass
@@ -117,10 +120,18 @@ class Dataset:
         }
 
     def dump(self) -> dict:
+        query_rows = []
+        for query in self.queries:
+            row = asdict(query)
+            # Preserve the byte-for-byte classic/v11 fixture contract. The new
+            # field exists only in the independent relative-time suite.
+            if not row.get("reference_time"):
+                row.pop("reference_time", None)
+            query_rows.append(row)
         return {
             "meta": self.to_dict(),
             "sessions": self.sessions,
-            "queries": [asdict(q) for q in self.queries],
+            "queries": query_rows,
         }
 
 
@@ -312,12 +323,55 @@ def make_dataset(seed: int = 20260806, scale: str = "small",
                 [key(3), key(5)],
             ))
 
+        if suite == "relative_time":
+            # 独立相对时间代理集。文档本身不出现“上周/上个月”等查询短语，
+            # 避免靠词面重合取巧；每题只改变事件时间，且固定同一个 as_of。
+            probe_session_id = f"{user_id}-relative-time"
+            anchor_ms = 1_763_553_600_000  # 2025-11-19T12:00:00Z
+            day = 24 * 60 * _MINUTE
+            probe_messages = [
+                _msg("user", f"{project}进展纪要：旧阶段已完成。", anchor_ms - 15 * day),
+                _msg("user", f"{project}进展纪要：接口联调完成。", anchor_ms - 7 * day),
+                _msg("user", f"{project}进展纪要：本轮仅整理格式。", anchor_ms - 1 * day),
+                _msg("user", f"{project} risk memo: legacy capacity note.", anchor_ms - 70 * day),
+                _msg("user", f"{project} risk memo: dependency window confirmed.", anchor_ms - 35 * day),
+                _msg("user", f"{project} risk memo: current formatting pass.", anchor_ms - 5 * day),
+                _msg("user", f"{project}阶段回顾：更早的设计草案。", anchor_ms - 120 * day),
+                _msg("user", f"{project}阶段回顾：容量方案通过。", anchor_ms - 45 * day),
+                _msg("user", f"{project} activity digest: archived draft.", anchor_ms - 20 * day),
+                _msg("user", f"{project} activity digest: smoke test passed.", anchor_ms - 4 * day),
+            ]
+            user_sessions.append({
+                "user_id": user_id,
+                "session_id": probe_session_id,
+                "messages": probe_messages,
+            })
+            key = lambda idx: f"{probe_session_id}#{idx}"
+            queries.extend([
+                Query(f"q{u_idx:04d}-relative-last-week", user_id, "relative_time", "relative",
+                      f"{project}上周的进展是什么？", [key(1)], [key(0), key(2)],
+                      RELATIVE_TIME_AS_OF),
+                Query(f"q{u_idx:04d}-relative-last-month-en", user_id, "relative_time", "relative",
+                      f"What did the {project} risk memo say last month?", [key(4)],
+                      [key(3), key(5)], RELATIVE_TIME_AS_OF),
+                Query(f"q{u_idx:04d}-relative-recent-months", user_id, "relative_time", "relative",
+                      f"最近三个月{project}的阶段回顾是什么？", [key(7)], [key(6)],
+                      RELATIVE_TIME_AS_OF),
+                Query(f"q{u_idx:04d}-relative-past-days-en", user_id, "relative_time", "relative",
+                      f"What was in the {project} activity digest in the past 10 days?",
+                      [key(9)], [key(8)], RELATIVE_TIME_AS_OF),
+            ])
+
         for sess in user_sessions:
             sess.pop("_base", None)
             sessions.append(sess)
+
+    if suite == "relative_time":
+        queries = [q for q in queries if q.kind == "relative_time"]
 
     return Dataset(seed=seed, scale=scale, difficulty=difficulty, suite=suite,
                    users=users, sessions=sessions, queries=queries)
 
 
-__all__ = ["Dataset", "Query", "make_dataset", "SCALES", "DIFFICULTIES", "SUITES"]
+__all__ = ["Dataset", "Query", "make_dataset", "SCALES", "DIFFICULTIES", "SUITES",
+           "RELATIVE_TIME_AS_OF"]

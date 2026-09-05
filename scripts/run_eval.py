@@ -35,7 +35,7 @@ from aml_retriever.evaluation.harness import (                     # noqa: E402
 
 CSV_COLUMNS = [
     "stage", "skipped", "queries", "recall@20", "recall@100", "mrr",
-    "distractor_leak@10", "avg_returned",
+    "distractor_leak@10", "candidate_recall@max", "avg_returned",
     "p50_ms", "p95_ms", "p99_ms", "max_ms", "index_elapsed_s", "messages_per_s",
 ]
 
@@ -81,6 +81,7 @@ def to_csv_row(result) -> dict:
         "recall@100": overall.get("recall@100"),
         "mrr": overall.get("mrr"),
         "distractor_leak@10": overall.get("distractor_leak@10"),
+        "candidate_recall@max": overall.get("candidate_recall@max"),
         "avg_returned": overall.get("avg_returned"),
         "p50_ms": latency.get("p50_ms"),
         "p95_ms": latency.get("p95_ms"),
@@ -121,17 +122,18 @@ def write_report(path: str, payload: dict) -> None:
         "",
         "## 1. 消融梯度总览",
         "",
-        "| 档位 | Recall@20 | Recall@100 | MRR | 旧值泄漏@10 | p50(ms) | p95(ms) | 建库(s) |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 档位 | 候选池 gold 召回 | Recall@20 | Recall@100 | MRR | 旧值泄漏@10 | p50(ms) | p95(ms) | 建库(s) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for stage in payload["stages"]:
         mark = " **(v1.1 代码默认)**" if stage["stage"] == PRODUCTION_STAGE else ""
         if stage["skipped"]:
-            lines.append(f"| `{stage['stage']}`{mark} | 跳过 | 跳过 | 跳过 | 跳过 | — | — | — |")
+            lines.append(f"| `{stage['stage']}`{mark} | 跳过 | 跳过 | 跳过 | 跳过 | 跳过 | — | — | — |")
             continue
         o, lat, idx = stage["overall"], stage["latency"], stage["index"]
         lines.append(
-            f"| `{stage['stage']}`{mark} | {fmt(o.get('recall@20'))} | "
+            f"| `{stage['stage']}`{mark} | {fmt(o.get('candidate_recall@max'))} | "
+            f"{fmt(o.get('recall@20'))} | "
             f"{fmt(o.get('recall@100'))} | "
             f"{fmt(o.get('mrr'))} | {fmt(o.get('distractor_leak@10'))} | "
             f"{fmt(lat.get('p50_ms'), 2)} | {fmt(lat.get('p95_ms'), 2)} | "
@@ -220,6 +222,7 @@ def write_report(path: str, payload: dict) -> None:
         "- 结果可能是原始消息或聚合视图；只要某条结果的 `source_message_ids` 覆盖 gold 消息即算召回。",
         "- `Recall@k` = 前 k 条结果覆盖到的 gold 消息数 / gold 总数，按查询取平均。",
         "- `MRR` = 首个命中任一 gold 的结果排名倒数，未命中记 0。",
+        "- `候选池 gold 召回` 在任何特征重排前测量；gold 未进入 FTS 候选池时，时间窗软加权无法补救。",
         "- `旧值泄漏@10` = 前 10 条中出现「已被覆写旧值」的比例，**越低越好**；"
         "系统不做删除，只做降权与冲突标注，故不为 0 属预期。",
         "- `absent` 类查询 gold 为空，不计入 Recall/MRR，仅用于观察系统是否硬凑证据。",
@@ -295,38 +298,42 @@ def write_multiseed_report(path: str, payload: dict) -> None:
         f"SQLite {payload['environment']['sqlite_library_version']} / "
         f"FTS5={payload['environment']['fts5']}",
         "",
-        "> 本报告的目的**不是**刷分，而是确认指标在合成数据随机种子之间是**稳定的**"
-        "——即单 seed 上的结论（尤其 temporal×paraphrase 短板、L9 guarded supersession 是否缓解）"
-        "并非某个 seed 的偶然。所有数字均为本机纯合成、零依赖、不联网。",
+        "> 本报告的目的**不是**刷分，而是确认指标在合成数据随机种子之间是**稳定的**。"
+        "所有数字均为本机纯合成、零依赖、不联网。",
         "",
         "## 1. 跨 seed 聚合总览（各指标 mean / min / max）",
         "",
-        "| 档位 | Recall@20 | Recall@100 | MRR | 旧值泄漏@10 | p50 (ms) | p95 (ms) |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 档位 | 候选池 gold 召回 | Recall@20 | Recall@100 | MRR | 旧值泄漏@10 | p50 (ms) | p95 (ms) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for a in aggregate:
         mark = " **(v1.1 代码默认)**" if a["stage"] == PRODUCTION_STAGE else ""
         if a["skipped"]:
-            lines.append(f"| `{a['stage']}`{mark} | 跳过 | 跳过 | 跳过 | 跳过 | 跳过 | 跳过 |")
+            lines.append(f"| `{a['stage']}`{mark} | 跳过 | 跳过 | 跳过 | 跳过 | 跳过 | 跳过 | 跳过 |")
             continue
         o = a["overall"]
         lat = a.get("latency") or {}
         lines.append(
-            f"| `{a['stage']}`{mark} | {fmt_agg(o.get('recall@20'))} | "
+            f"| `{a['stage']}`{mark} | {fmt_agg(o.get('candidate_recall@max'))} | "
+            f"{fmt_agg(o.get('recall@20'))} | "
             f"{fmt_agg(o.get('recall@100'))} | {fmt_agg(o.get('mrr'))} | "
             f"{fmt_agg(o.get('distractor_leak@10'))} | "
             f"{fmt_agg(lat.get('p50_ms'), 2)} | {fmt_agg(lat.get('p95_ms'), 2)} |"
         )
 
-    # §2：短板聚焦 —— temporal×paraphrase 交叉单元格的 L5/L8/L9 对比
+    # §2：经典套件聚焦 temporal×paraphrase；相对时间代理集聚焦独立 kind。
     # 数据集 difficulty=plain 时不存在 paraphrase 难度，回退到 temporal|<difficulty>，
     # 并在标题里说明——否则整节会退化成三行「（无该交叉格）」，读者无法判断是缺数据还是没跑。
     available_cells = {k for a in aggregate for k in (a.get("by_kind_difficulty") or {})}
-    cell_key = "temporal|paraphrase"
+    cell_key = "relative_time|relative" if suite == "relative_time" else "temporal|paraphrase"
     if cell_key not in available_cells:
-        fallback = f"temporal|{difficulty}"
+        fallback_kind = "relative_time" if suite == "relative_time" else "temporal"
+        fallback = f"{fallback_kind}|{difficulty}"
         cell_key = fallback if fallback in available_cells else ""
-    if cell_key == "temporal|paraphrase":
+    if suite == "relative_time" and cell_key:
+        focus_note = ("> 本节是固定 `as_of` 的独立合成相对时间代理集，只检验显式时间窗软重排；"
+                      "它不能替代经典 `temporal|paraphrase` 的报告，也不能外推为官方数据收益。")
+    elif cell_key == "temporal|paraphrase":
         focus_note = ("> 系统最弱的一环是「时间限定 + 查询被改写」：纯词法 + 确定性特征抓不到时间锚点"
                       "（见 docs/EVAL.md 附录 B）。该弱点在 **kind×difficulty 交叉表** 的 "
                       "`temporal|paraphrase` 单元格才暴露；看 `temporal` 整体会被其他难度稀释。")
@@ -350,8 +357,12 @@ def write_multiseed_report(path: str, payload: dict) -> None:
         PRODUCTION_STAGE: "v1.1 代码默认",
         CONTROL_STAGE: "v1.0 基线",
         "L8_supersession_ctrl": "无保护安全对照",
+        "L11_relative_time_ctrl": "相对时间窗对照",
     }
-    for stage in (PRODUCTION_STAGE, CONTROL_STAGE, "L8_supersession_ctrl"):
+    focus_stages = ((PRODUCTION_STAGE, "L11_relative_time_ctrl")
+                    if suite == "relative_time"
+                    else (PRODUCTION_STAGE, CONTROL_STAGE, "L8_supersession_ctrl"))
+    for stage in focus_stages:
         a = agg_by_stage.get(stage)
         if not a or a["skipped"]:
             continue
@@ -363,13 +374,22 @@ def write_multiseed_report(path: str, payload: dict) -> None:
             f"| `{stage}` | {role_of.get(stage, '—')} | {fmt_agg(cell.get('mrr'))} | "
             f"{fmt_agg(cell.get('recall@20'))} | {fmt_agg(cell.get('distractor_leak@10'))} |"
         )
+    if suite == "relative_time":
+        lines += [
+            "",
+            "> `L11_relative_time_ctrl` 只在内部调用显式提供 aware `reference_time` 时软加权窗内原始消息；"
+            "不提供锚点就不生效，且绝不删除窗外证据。该档仍默认关闭。",
+        ]
+    else:
+        lines += [
+            "",
+            "> **v1.1 说明**：`L8_supersession_ctrl` 只看话题重合与时间，作为无保护安全对照；"
+            f"`{PRODUCTION_STAGE}` 进一步要求显式更新语义，并使用保守 4/1 权重。两者都只做软重排，"
+            "不安装依赖、不做 confirmed-only 过滤，也不删除旧证据。",
+            f"> 只有 `{PRODUCTION_STAGE}` 在跨 seed 上同时守住召回门并提升 MRR，才可标记为 v1.1 默认；"
+            "官方数据上的效果仍必须写为 unknown，不能用本合成代理集代替官方验证。",
+        ]
     lines += [
-        "",
-        "> **v1.1 说明**：`L8_supersession_ctrl` 只看话题重合与时间，作为无保护安全对照；"
-        f"`{PRODUCTION_STAGE}` 进一步要求显式更新语义，并使用保守 4/1 权重。两者都只做软重排，"
-        "不安装依赖、不做 confirmed-only 过滤，也不删除旧证据。",
-        f"> 只有 `{PRODUCTION_STAGE}` 在跨 seed 上同时守住召回门并提升 MRR，才可标记为 v1.1 默认；"
-        "官方数据上的效果仍必须写为 unknown，不能用本合成代理集代替官方验证。",
         "",
         "## 3. 逐 seed 稳定性（v1.1 代码默认档位 " + PRODUCTION_STAGE + "）",
         "",
@@ -392,13 +412,16 @@ def write_multiseed_report(path: str, payload: dict) -> None:
         "- `Recall@k` = 前 k 条覆盖到的 gold 消息数 / gold 总数，按查询取平均；"
         "结果为原始消息或聚合视图皆可，只要 `source_message_ids` 覆盖 gold 即算命中。",
         "- `MRR` = 首个命中任一 gold 的结果排名倒数，未命中记 0。",
+        "- `candidate_recall@max` 在任何特征重排前测量；若 gold 未进 FTS 候选池，"
+        "本实验的相对时间重排没有能力把它召回。",
         "- `旧值泄漏@10` = 前 10 条出现「已被覆写旧值」的比例，越低越好；"
         "系统不删旧值，只降权与冲突标注，故不为 0 属预期。",
         "- `p50/p95 (ms)` = 单次 search 的端到端耗时分位数（本机、冷缓存、单进程），"
         "跨 seed 聚合的是各 seed 自身的分位数再取 mean/min/max，**不是**把所有 seed 的原始延迟合池后取分位。",
         "- 跨 seed 聚合：`mean` 为各 seed 算术平均，`min/max` 为各 seed 极值，`n` 为参与聚合的 seed 数。",
         "- 产物只含指标数字，**不落任何语料原文**；逐 seed 明细见同目录 "
-        f"`ablation_{scale}_{difficulty}_multiseed_per_seed.csv`。临时索引库跑完即删。",
+        f"`ablation_{scale}_{difficulty}{'' if suite == 'classic' else '_' + suite}_multiseed_per_seed.csv`。"
+        "临时索引库跑完即删。",
         "",
         "```bash",
         f"cd {payload['repo']}",
@@ -444,7 +467,8 @@ def write_multiseed_artifacts(out_dir: str, payload: dict) -> list[str]:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
 
     # 跨 seed 聚合 CSV：每个档位一行，质量指标 + 延迟指标各自的 mean/min/max
-    quality_keys = ("recall@20", "recall@100", "mrr", "distractor_leak@10")
+    quality_keys = ("recall@20", "recall@100", "mrr", "distractor_leak@10",
+                    "candidate_recall@max")
     latency_keys = ("p50_ms", "p95_ms")
     agg_cols = ["stage", "skipped", "n_seeds"]
     for k in quality_keys + latency_keys:
@@ -489,7 +513,8 @@ def main(argv=None) -> int:
     parser.add_argument("--difficulty", default="mixed", choices=list(DIFFICULTIES),
                         help="查询难度：plain=词面重叠 / paraphrase=改写 / mixed=各半")
     parser.add_argument("--suite", default="classic", choices=list(SUITES),
-                        help="评测套件：classic=原基准 / v11=原基准加更新与偏好代理题")
+                        help="评测套件：classic=原基准 / v11=更新与偏好代理题 / "
+                             "relative_time=固定 as_of 的独立相对时间代理题")
     parser.add_argument("--top-k", type=int, default=OFFICIAL_TOP_K, help="检索 top_k")
     parser.add_argument("--out", default="eval_out", help="产物输出目录")
     parser.add_argument("--stages", default="", help="逗号分隔的档位白名单")
