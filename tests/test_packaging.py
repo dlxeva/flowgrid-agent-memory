@@ -143,10 +143,12 @@ class TestOfflineWheel(unittest.TestCase):
     def test_fresh_venv_isolated_import_cli_and_demo(self):
         venv = self.root / "fresh-venv"
         _run([sys.executable, "-m", "venv", str(venv)], cwd=self.build_cwd, env=self.env)
-        python = venv / "bin" / "python"
-        cli = venv / "bin" / "flowgrid-memory"
-        mcp_cli = venv / "bin" / "flowgrid-memory-mcp"
-        rest_cli = venv / "bin" / "flowgrid-memory-rest"
+        binary = venv / ("Scripts" if os.name == "nt" else "bin")
+        python = binary / ("python.exe" if os.name == "nt" else "python")
+        suffix = ".exe" if os.name == "nt" else ""
+        cli = binary / f"flowgrid-memory{suffix}"
+        mcp_cli = binary / f"flowgrid-memory-mcp{suffix}"
+        rest_cli = binary / f"flowgrid-memory-rest{suffix}"
         _run(
             [
                 str(python),
@@ -199,7 +201,7 @@ class TestOfflineWheel(unittest.TestCase):
         self.assertTrue(info["manifest_attested"])
         self.assertTrue(info["baseline_exists"])
         self.assertEqual(info["http_banner"], "aml-retriever/1.1")
-        self.assertIn(str(venv / "lib"), info["file"])
+        self.assertIn(str(venv / ("Lib" if os.name == "nt" else "lib")), info["file"])
         self.assertIn("site-packages", info["file"])
         self.assertNotIn(str(REPO), info["file"])
         self.assertTrue(mcp_cli.is_file())

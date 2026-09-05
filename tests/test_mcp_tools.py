@@ -6,6 +6,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -211,7 +212,7 @@ class TestGovernedFlow(MCPToolsCase):
                 rejected,
                 {"status": "error", "error": {"code": "invalid_request"}},
             )
-        with sqlite3.connect(self.db_path) as con:
+        with closing(sqlite3.connect(self.db_path)) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 1)
             self.assertEqual(con.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
 
@@ -245,7 +246,7 @@ class TestGovernedFlow(MCPToolsCase):
             denied,
             {"status": "error", "error": {"code": "invalid_request"}},
         )
-        with sqlite3.connect(self.db_path) as con:
+        with closing(sqlite3.connect(self.db_path)) as con:
             self.assertEqual(
                 con.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0], 0
             )
