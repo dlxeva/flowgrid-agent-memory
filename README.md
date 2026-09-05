@@ -117,6 +117,21 @@ The default zero-dependency extractor recognizes only a strict whole-message
 zero proposals. A host can inject its own extractor, but the core still binds
 scope and authority, verifies source spans, and persists candidate-only output.
 
+Host extractor authors can run the zero-dependency conformance kit before
+integration. It exercises the real production boundary and returns a stable,
+redacted JSON report:
+
+```python
+from flowgrid_memory import ExtractorIdentity, run_extractor_conformance
+
+identity = ExtractorIdentity("example", "1", "host-callable")
+report = run_extractor_conformance(identity, extract)
+assert report.passed, report.to_json()
+```
+
+Finite probes do not certify an extractor as trusted, and the in-process kit
+cannot stop an infinite loop. See [Extractor conformance kit](docs/EXTRACTOR_CONFORMANCE.md).
+
 ## Local CLI
 
 ```bash
