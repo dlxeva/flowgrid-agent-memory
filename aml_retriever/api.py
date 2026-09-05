@@ -319,6 +319,8 @@ class MemoryService:
         """
 
         active_extractor = extractor if extractor is not None else DirectiveMemoryExtractor()
+        invocation_failure: ExtractorInvocationError | None = None
+        identity_failure = False
         try:
             identity = active_extractor.identity
             if not isinstance(identity, ExtractorIdentity) or not callable(
@@ -336,7 +338,11 @@ class MemoryService:
             }
             sealed_identity = ExtractorIdentity(**identity_snapshot)
         except Exception:
-            raise ExtractionValidationError("extractor identity is unavailable") from None
+            identity_failure = True
+        if identity_failure:
+            # Do not retain an injected identity property's exception payload
+            # through the implicit ``__context__`` chain.
+            raise ExtractionValidationError("extractor identity is unavailable")
 
         events = self.db.raw_events_for_extraction(
             user_id=user_id,
@@ -382,15 +388,19 @@ class MemoryService:
                 raise
             # Custom protocol implementations are untrusted even when they
             # deliberately raise one of our exception classes with source text.
-            raise ExtractorInvocationError("extractor invocation failed") from None
+            invocation_failure = ExtractorInvocationError("extractor invocation failed")
         except TimeoutError:
-            raise ExtractorInvocationError("extractor invocation timed out") from None
+            invocation_failure = ExtractorInvocationError("extractor invocation timed out")
         except BaseException:
             # In-process plug-ins must not be able to smuggle source text or
             # terminate a long-lived service with control-flow exceptions such
             # as SystemExit or KeyboardInterrupt. Host cancellation belongs at
             # the executor/process boundary, not inside an extractor result.
-            raise ExtractorInvocationError("extractor invocation failed") from None
+            invocation_failure = ExtractorInvocationError("extractor invocation failed")
+        if invocation_failure is not None:
+            # Raising outside the handler severs the untrusted ``__context__``
+            # chain instead of merely suppressing its display.
+            raise invocation_failure
         proposals = validate_proposals(request, output)
         # Persist with a fresh detached request that the callable never saw.
         # The digest equality check proves it is the same exact input snapshot.

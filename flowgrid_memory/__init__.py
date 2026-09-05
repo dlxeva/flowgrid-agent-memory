@@ -69,6 +69,12 @@ from aml_retriever.model_extraction import (
     build_model_extraction_prompt,
     quote_anchored_identity,
 )
+from .conformance import (
+    REPORT_SCHEMA as CONFORMANCE_REPORT_SCHEMA,
+    ConformanceCase,
+    ConformanceReport,
+    run_extractor_conformance,
+)
 
 __version__ = PRODUCT_VERSION
 
@@ -130,4 +136,8 @@ __all__ = [
     "quote_anchored_identity",
     "SchemaReport",
     "inspect_schema",
+    "CONFORMANCE_REPORT_SCHEMA",
+    "ConformanceCase",
+    "ConformanceReport",
+    "run_extractor_conformance",
 ]

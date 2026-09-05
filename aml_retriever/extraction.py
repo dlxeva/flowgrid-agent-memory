@@ -612,15 +612,19 @@ class CallableMemoryExtractor:
         return self._identity
 
     def _invoke(self, request: ExtractionRequest) -> object:
+        failure: ExtractorInvocationError | None = None
         try:
             return self._function(request)
         except TimeoutError:
             # This adapter does not claim hard cancellation.  The host must
             # enforce its own deadline/cancellation/limiter, wait for that
             # outcome, and only then raise TimeoutError across this boundary.
-            raise ExtractorInvocationError("extractor invocation timed out") from None
+            failure = ExtractorInvocationError("extractor invocation timed out")
         except Exception:
-            raise ExtractorInvocationError("extractor invocation failed") from None
+            failure = ExtractorInvocationError("extractor invocation failed")
+        # Raise after leaving the handler so the untrusted exception is not
+        # retained through ``__context__`` even when ``__cause__`` is hidden.
+        raise failure
 
     def extract(self, request: ExtractionRequest) -> tuple[ProposalDraft, ...]:
         # Bypass a potentially shadowing instance attribute; only the
