@@ -35,6 +35,20 @@ docker run --rm -i \
 
 The MCP target communicates over stdin/stdout and publishes no TCP port.
 
+For a synthetic end-to-end check, install the optional MCP SDK on the host and
+run the official-client probe against the built image:
+
+```bash
+python scripts/smoke_mcp.py --container-image flowgrid-agent-memory:mcp-0.1.0
+```
+
+This starts an isolated container with networking disabled, an in-memory
+database, and only a temporary synthetic principal file mounted read-only. It
+checks tool discovery, ingestion, candidate extraction, the owner gate,
+cross-user/cross-scope denial, and stderr privacy. No candidate is confirmed.
+The named test container is removed on success or failure; cleanup errors fail
+the probe. CI and release verification use this session, not just `--help`.
+
 ## REST boundary
 
 The verified REST adapter accepts only the literal `127.0.0.1` bind address. In

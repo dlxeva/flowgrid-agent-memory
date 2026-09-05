@@ -7,6 +7,9 @@ import json
 import os
 import sys
 import tempfile
+import subprocess
+import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 import anyio
@@ -34,11 +37,20 @@ def _parser() -> argparse.ArgumentParser:
         default=str(REPO),
         help="explicit server working directory",
     )
+    parser.add_argument("--container-image", help="run the MCP target through Docker stdio")
     return parser
 
 
-async def _run(server_executable: str | None, server_cwd: str) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="flowgrid-mcp-stdio-") as temporary:
+def _remove_container(name: str) -> None:
+    result = subprocess.run(
+        ["docker", "rm", "--force", name], capture_output=True, text=True, timeout=20
+    )
+    if result.returncode and "No such container" not in result.stderr:
+        raise RuntimeError("smoke container cleanup failed")
+
+
+async def _run(server_executable: str | None, server_cwd: str, container_image: str | None = None) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="flowgrid-mcp-stdio-") as temporary, ExitStack() as cleanup:
         root = Path(temporary)
         db_path = root / "memory.db"
         principal_path = root / "trusted-principal.json"
@@ -56,7 +68,21 @@ async def _run(server_executable: str | None, server_cwd: str) -> dict[str, obje
             ),
             encoding="utf-8",
         )
-        if server_executable:
+        if container_image:
+            # Only synthetic principal data is mounted; no repository, host
+            # memory database, credentials, or network are exposed.
+            root.chmod(0o755)
+            principal_path.chmod(0o644)
+            name = "flowgrid-mcp-smoke-" + uuid.uuid4().hex
+            cleanup.callback(_remove_container, name)
+            command = "docker"
+            arguments = [
+                "run", "--rm", "-i", "--network", "none", "--name", name,
+                "--mount", f"type=bind,src={principal_path},dst=/run/principal.json,readonly",
+                container_image, "--db", ":memory:",
+                "--principal-config", "/run/principal.json",
+            ]
+        elif server_executable:
             command = server_executable
             arguments = [
                 "--db",
@@ -99,7 +125,7 @@ async def _run(server_executable: str | None, server_cwd: str) -> dict[str, obje
         with stderr_path.open("w+", encoding="utf-8") as stderr_capture:
             transport = stdio_client(params, errlog=stderr_capture)
             server_process = None
-            with anyio.fail_after(30):
+            with anyio.fail_after(60):
                 async with Client(transport) as client:
                     # Test-only handle used solely to prove the official
                     # transport reaped its subprocess at context exit.
@@ -163,6 +189,12 @@ async def _run(server_executable: str | None, server_cwd: str) -> dict[str, obje
                             "principal": "MCP-STDIO-FORGED-SENTINEL",
                         },
                     )
+                    denied = []
+                    for user_id, scope in (("u2", {"project": "stdio-test"}), ("u1", {"project": "other"})):
+                        denied.append(await client.call_tool(
+                            "memory_query_current",
+                            {"user_id": user_id, "memory_key": "stdio.preference", "scope": scope},
+                        ))
             stderr_capture.seek(0)
             stderr_text = stderr_capture.read()
         for private in (SENTINEL, str(db_path), str(principal_path), "UNKNOWN-SENTINEL", "FORGED-SENTINEL"):
@@ -181,6 +213,11 @@ async def _run(server_executable: str | None, server_cwd: str) -> dict[str, obje
             raise AssertionError("forbidden tool was not rejected")
         if forged.structured_content["error"]["code"] != "invalid_request":
             raise AssertionError("forged principal was not rejected")
+        for result in denied:
+            if result.structured_content.get("error", {}).get("code") != "access_denied":
+                raise AssertionError("cross-user or cross-scope request was not rejected")
+            if SENTINEL in json.dumps(result.model_dump(by_alias=True)):
+                raise AssertionError("unauthorized response disclosed candidate body")
 
         # The official stdio transport context must reap its child before it
         # returns.  This proof uses the transport's test-only process handle;
@@ -197,6 +234,8 @@ async def _run(server_executable: str | None, server_cwd: str) -> dict[str, obje
             "prompts": 0,
             "candidate_unknown": True,
             "owner_gate": True,
+            "authorization_denials": len(denied),
+            "server_runtime": "docker" if container_image else "local",
             "stderr_private_data": False,
             "orphan_process": False,
         }
@@ -204,7 +243,9 @@ async def _run(server_executable: str | None, server_cwd: str) -> dict[str, obje
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    result = anyio.run(_run, args.server_executable, args.server_cwd)
+    if args.container_image and args.server_executable:
+        _parser().error("--container-image and --server-executable are mutually exclusive")
+    result = anyio.run(_run, args.server_executable, args.server_cwd, args.container_image)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

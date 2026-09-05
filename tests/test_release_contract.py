@@ -19,7 +19,8 @@ class TestReleaseContract(unittest.TestCase):
             "docker build --target cli",
             "docker run --rm flowgrid-agent-memory:ci",
             "docker build --target mcp",
-            "docker run --rm flowgrid-agent-memory:mcp-ci --help",
+            "python scripts/smoke_mcp.py --container-image flowgrid-agent-memory:mcp-ci",
+            "python scripts/smoke_wheel.py dist/*.whl",
         ):
             self.assertIn(required, workflow)
 
@@ -28,6 +29,8 @@ class TestReleaseContract(unittest.TestCase):
         for required in (
             "./scripts/run_tests.sh --with-mcp",
             "python -m build",
+            "python scripts/smoke_wheel.py dist/*.whl",
+            "python scripts/smoke_mcp.py --container-image flowgrid-agent-memory:mcp-release",
             "docker build --target cli",
             "docker build --target mcp",
             "generate_release_evidence.py",
