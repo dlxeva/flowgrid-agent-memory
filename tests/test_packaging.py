@@ -201,7 +201,7 @@ class TestOfflineWheel(unittest.TestCase):
         self.assertTrue(info["manifest_attested"])
         self.assertTrue(info["baseline_exists"])
         self.assertEqual(info["http_banner"], "aml-retriever/1.1")
-        self.assertIn(str(venv / "lib"), info["file"])
+        self.assertIn(str(venv / ("Lib" if os.name == "nt" else "lib")), info["file"])
         self.assertIn("site-packages", info["file"])
         self.assertNotIn(str(REPO), info["file"])
         self.assertTrue(mcp_cli.is_file())
