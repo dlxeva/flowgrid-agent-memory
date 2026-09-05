@@ -49,6 +49,10 @@ DEFAULT_FLAGS: dict[str, bool] = {
     # 个性化证据来源：偏好类查询中，轻度抬高用户本人直接陈述，绝不删除
     # assistant 转述或其他原始证据。代理集虽显示正收益，但场景宽度仍不足，默认关闭。
     "preference_role_boost": False,
+    # 显式相对时间窗只做候选集内软加权。必须由内部调用方同时传入 aware
+    # reference_time 才会生效；官方 AML Search 请求形状不增加字段。
+    # 独立合成代理集范围仍有限，保持关闭，见 docs/EVAL.md 附录 F。
+    "relative_time": False,
 }
 
 
@@ -98,6 +102,9 @@ class RetrieverConfig:
     # 偏好类查询中，“role=user + 第一人称偏好陈述”的软加权。
     # 只改变排序，不过滤任何候选，且在 RRF 前进入特征路排序。
     preference_role_weight: float = 14.0
+
+    # 相对时间窗命中加成。窗外证据不删除、不降权，避免把解析器变成过滤器。
+    relative_time_weight: float = 24.0
 
     # 一致性 / 并发
     busy_timeout_ms: int = 10000

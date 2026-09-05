@@ -728,11 +728,16 @@ class RetrieverDB:
         top_k: int | None = None,
         options: list[str] | None = None,
         request_id: str | None = None,
+        reference_time: datetime | None = None,
     ) -> SearchResult:
         if not user_id:
             raise ValueError("user_id is required")
         if query is None:
             raise ValueError("query is required")
+        if reference_time is not None and (
+            reference_time.tzinfo is None or reference_time.utcoffset() is None
+        ):
+            raise ValueError("reference_time must be timezone-aware")
         limit = self.config.top_k_default if top_k is None else int(top_k)
         limit = max(0, min(limit, int(self.config.top_k_max)))
         if limit == 0:
@@ -756,7 +761,14 @@ class RetrieverDB:
         if not records:
             return SearchResult(request_id=request_id, total=0, results=[])
 
-        scored = self._score(records, query, tokens, rank_map)
+        relative_window = None
+        if (
+            self.flags.get("rerank", True)
+            and self.flags.get("relative_time", False)
+            and reference_time is not None
+        ):
+            relative_window = features.parse_relative_time_window(query, anchor=reference_time)
+        scored = self._score(records, query, tokens, rank_map, relative_window=relative_window)
         ordered = self._fuse_and_order(scored, fts_order)
         if self.flags.get("dedup", True):
             ordered = self._dedup(ordered)
@@ -811,7 +823,7 @@ class RetrieverDB:
                 out.append(rec)
         return out
 
-    def _score(self, records, query, tokens, rank_map) -> list[dict]:
+    def _score(self, records, query, tokens, rank_map, *, relative_window=None) -> list[dict]:
         q_lower = (query or "").lower()
         numbers = features.extract_numbers(query)
         dates = features.extract_dates(query)
@@ -906,6 +918,17 @@ class RetrieverDB:
                     age_days = self._age_days(rec.get("created_at"), now_ts)
                     score += W_RECENCY / (1.0 + math.log1p(max(0.0, age_days)))
                     flags.append("recency")
+
+            # Only original messages have a single authoritative event time.
+            # Aggregate views may straddle the boundary, so boosting them by
+            # their first source timestamp would manufacture false precision.
+            if relative_window is not None and rec["view"] == "message":
+                epoch = self._epoch_of(rec)
+                if epoch is not None:
+                    instant = datetime.fromtimestamp(epoch, tz=timezone.utc)
+                    if relative_window.contains(instant):
+                        score += float(getattr(self.config, "relative_time_weight", 24.0))
+                        flags.append("relative_time_window")
 
             rec["score"] = score
             rec["flags"] = flags

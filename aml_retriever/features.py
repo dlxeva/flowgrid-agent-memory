@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import re
+from calendar import monthrange
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 # 中日韩统一表意文字（含扩展 A）与兼容表意文字
 _CJK_RE = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+")
@@ -86,6 +89,151 @@ _DIRECT_PREFERENCE_EN_RE = re.compile(
     r"|\b(?:my|our)\s+(?:favorite|favourite|preferred|go-to)\b",
     re.IGNORECASE,
 )
+
+_RELATIVE_LAST_RE = re.compile(
+    r"(?<![a-z])last\s+(week|month)(?![a-z])", re.IGNORECASE
+)
+_RELATIVE_RECENT_EN_RE = re.compile(
+    r"(?<![a-z])(?:recent|past|last)\s+(\d{1,3})\s+"
+    r"(day|days|week|weeks|month|months)(?![a-z])",
+    re.IGNORECASE,
+)
+_RELATIVE_RECENT_CN_RE = re.compile(
+    r"(?:最近|近|过去)([一二三四五六七八九十百两\d]{1,4})个?"
+    r"(天|日|周|星期|个月|月)"
+)
+_MAX_RELATIVE_UNITS = 120
+
+
+@dataclass(frozen=True)
+class TimeWindow:
+    """A parsed relative interval, normalized to a UTC half-open window."""
+
+    start: datetime
+    end: datetime
+    expression: str
+
+    def __post_init__(self) -> None:
+        if self.start.tzinfo is None or self.end.tzinfo is None:
+            raise ValueError("time-window bounds must be timezone-aware")
+        if self.start.utcoffset() != timedelta(0) or self.end.utcoffset() != timedelta(0):
+            raise ValueError("time-window bounds must be UTC")
+        if self.start >= self.end:
+            raise ValueError("time-window start must precede end")
+
+    def contains(self, instant: datetime) -> bool:
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError("instant must be timezone-aware")
+        value = instant.astimezone(timezone.utc)
+        return self.start <= value < self.end
+
+
+def _cn_integer(raw: str) -> int | None:
+    if raw.isdigit():
+        value = int(raw)
+        return value if 1 <= value <= _MAX_RELATIVE_UNITS else None
+    digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9}
+    if raw == "十":
+        return 10
+    if "百" in raw:
+        left, right = raw.split("百", 1)
+        hundreds = digits.get(left, 1 if left == "" else 0)
+        tail = _cn_integer(right) if right else 0
+        value = hundreds * 100 + (tail or 0)
+        return value if 1 <= value <= _MAX_RELATIVE_UNITS else None
+    if "十" in raw:
+        left, right = raw.split("十", 1)
+        tens = digits.get(left, 1 if left == "" else 0)
+        ones = digits.get(right, 0) if right else 0
+        value = tens * 10 + ones
+        return value if 1 <= value <= _MAX_RELATIVE_UNITS else None
+    value = digits.get(raw)
+    return value if value and value <= _MAX_RELATIVE_UNITS else None
+
+
+def _shift_months(value: datetime, months: int) -> datetime:
+    absolute = value.year * 12 + value.month - 1 + months
+    year, month0 = divmod(absolute, 12)
+    month = month0 + 1
+    day = min(value.day, monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def parse_relative_time_window(query: str, *, anchor: datetime) -> TimeWindow | None:
+    """Parse a deliberately small relative-time subset against ``anchor``.
+
+    ``anchor`` is mandatory and must be timezone-aware. Calendar expressions use
+    the anchor's timezone before both bounds are converted to UTC. Supported
+    expressions are ``上周/last week``, ``上个月/last month`` and trailing
+    ``最近/过去 N 天|周|月`` / ``recent|past|last N days|weeks|months``.
+    The returned interval is always half-open: ``[start, end)``.
+    """
+    if anchor.tzinfo is None or anchor.utcoffset() is None:
+        raise ValueError("anchor must be timezone-aware")
+    text = query or ""
+    lowered = text.lower()
+    local_anchor = anchor
+    last_matches = list(_RELATIVE_LAST_RE.finditer(lowered))
+    cn_matches = list(_RELATIVE_RECENT_CN_RE.finditer(text))
+    en_matches = list(_RELATIVE_RECENT_EN_RE.finditer(lowered))
+    last_week = (
+        "上周" in text
+        or "上个星期" in text
+        or any(match.group(1).lower() == "week" for match in last_matches)
+    )
+    last_month = (
+        "上个月" in text
+        or "上月" in text
+        or any(match.group(1).lower() == "month" for match in last_matches)
+    )
+    # Multiple relative expressions need a query planner, not a guessed boost.
+    # Fail closed so one ambiguous phrase cannot silently select the other.
+    if int(last_week) + int(last_month) + len(cn_matches) + len(en_matches) != 1:
+        return None
+
+    if last_week:
+        this_week = (local_anchor - timedelta(days=local_anchor.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        start, end, expression = this_week - timedelta(days=7), this_week, "last_week"
+    elif last_month:
+        this_month = local_anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start, end, expression = _shift_months(this_month, -1), this_month, "last_month"
+    else:
+        count: int | None = None
+        unit = ""
+        expression_text = ""
+        cn_match = cn_matches[0] if cn_matches else None
+        en_match = en_matches[0] if en_matches else None
+        if cn_match:
+            count = _cn_integer(cn_match.group(1))
+            unit = cn_match.group(2)
+            expression_text = cn_match.group(0)
+        elif en_match:
+            count = int(en_match.group(1))
+            unit = en_match.group(2).lower()
+            expression_text = en_match.group(0)
+        if count is None or not 1 <= count <= _MAX_RELATIVE_UNITS:
+            return None
+        if unit in ("天", "日", "day", "days"):
+            start = local_anchor - timedelta(days=count)
+            expression = "recent_days"
+        elif unit in ("周", "星期", "week", "weeks"):
+            start = local_anchor - timedelta(weeks=count)
+            expression = "recent_weeks"
+        else:
+            start = _shift_months(local_anchor, -count)
+            expression = "recent_months"
+        end = local_anchor
+        if not expression_text:
+            return None
+
+    return TimeWindow(
+        start=start.astimezone(timezone.utc),
+        end=end.astimezone(timezone.utc),
+        expression=expression,
+    )
 
 
 def has_temporal_intent(query: str) -> bool:
@@ -250,4 +398,6 @@ __all__ = [
     "has_direct_preference_statement",
     "has_numeric_value_intent",
     "has_date_value_intent",
+    "TimeWindow",
+    "parse_relative_time_window",
 ]

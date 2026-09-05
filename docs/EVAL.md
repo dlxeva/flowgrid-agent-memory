@@ -20,6 +20,7 @@ v1.0 的官方公开成绩（43.98，第 8 名）是一次独立的排行榜结�
 | `absent` | 库里根本没有答案 | 空（不计 Recall/MRR，只看是否硬凑证据） |
 | `governance_update_noise` | 真更新之后出现更晚的说明性提及 | 真更新为 gold；旧值与说明性提及为 distractor（仅 `suite=v11`） |
 | `direct_preference` | 用户本人偏好 vs assistant 建议 / 第三人偏好 | 用户第一人称原始消息（仅 `suite=v11`） |
+| `relative_time` | 显式“上周/上个月/最近 N 天周月”窗口 | 固定 `as_of` 的 UTC 半开窗内消息（仅 `suite=relative_time`） |
 
 > **边界声明**：这是**自造的**代理任务（proxy task），用来做**相对比较**（A 档 vs B 档）。
 > 它不能预测官方榜单绝对分数，也不等价于官方 LoCoMo 等数据集的难度分布。
@@ -33,6 +34,8 @@ v1.0 的官方公开成绩（43.98，第 8 名）是一次独立的排行榜结�
 - `旧值泄漏@10`：前 10 条里出现「已被覆写旧值」的比例，**越低越好**。
   本系统不删除旧值（原始消息必须全量保留），只做降权与冲突标注，因此不为 0 属预期。
 - 延迟：单进程串行 Search 的端到端墙钟时间，**不含 HTTP 开销**。
+- `candidate_recall@max`：任何特征重排前，FTS 候选池对 gold 的召回。若这里为 0，
+  相对时间软加权没有能力把 gold 从候选池外召回。
 
 ## 3. 主消融梯度（run_eval.py）
 
@@ -55,6 +58,7 @@ python3 scripts/run_eval.py --scale medium --difficulty mixed --seed 20260806 --
 | `L8_supersession_ctrl` | 无保护成对覆写（4/1 安全对照） | 总 MRR 小涨但一个 seed 的 Recall@20 回退，不默认启用 |
 | **`L9_guarded_supersession`** | 显式更新保护 + 保守 4/1 权重 | **v1.1 默认**；见附录 E |
 | `L10_preference_ctrl` | 用户第一人称偏好证据软加权 | 代理集有效，但场景宽度不足，默认关闭 |
+| `L11_relative_time_ctrl` | 显式锚点相对时间窗软加权 | 独立合成代理集有效，默认关闭；见附录 F |
 
 评测产物默认写入已被 Git 忽略的 `eval_out/`。若需要长期保存不同版本的结果，建议为
 每次运行指定独立的 `--out` 目录，并记录版本或提交号。
@@ -222,6 +226,48 @@ v1.1 将两个问题拆开评测：
 
 > 以上仍然只是**本地合成代理证据**。v1.0 的官方公开榜成绩与 v1.1 本地消融必须分开陈述；
 > v1.1 尚未提交官方复评，也不能用这里的 MRR 推算官方综合分。
+
+### 附录 F — 显式锚点的相对时间窗对照
+
+`L11_relative_time_ctrl` 在 L9 上增加纯标准库解析器，支持有限且公开的子集：
+`上周/last week`、`上个月/last month`，以及中英文“最近/过去 N 天、周、月”。
+其中 N 为 1–120 的阿拉伯数字或常见中文整数。
+解析必须由内部调用方传入带时区的 `reference_time`；解析器不会读取系统当前时间，
+也不会用每条证据自己的时间戳作为锚。日历表达式先按锚点时区计算，再归一为 UTC
+半开窗口 `[start, end)`。窗内原始消息只获得软加权，窗外证据不删除、不降权。
+官方 AML Add/Search 请求形状不增加 `reference_time` 字段。
+
+`small` / mixed / seeds 20260806–20260808 / top_k=100 的本地合成观测：
+
+| suite | 档位 | candidate recall@max | Recall@20 | MRR mean (min–max) |
+| --- | --- | --- | --- | --- |
+| `classic` | L9 | 1.0000 | 0.9974 | 0.7348 |
+| `classic` | L11 | 1.0000 | 0.9974 | 0.7348 |
+| `relative_time` | L9 | 1.0000 | 1.0000 | 0.6765 (0.6698–0.6863) |
+| `relative_time` | L11 | 1.0000 | 1.0000 | **1.0000 (1.0000–1.0000)** |
+
+同一轮 `classic` 的旧格 `temporal|paraphrase` 在 L9 与 L11 都是：
+candidate recall@max=1.0000、Recall@20=1.0000、MRR=0.6250，逐项相同。该轮是 small，
+不能拿 0.6250 覆盖附录 D 的历史 medium 数字。经典 suite 不携带隐式查询时点，
+因此这里只验证了“没有显式锚点就不生效”，
+不能表述为修复了经典 `temporal|paraphrase`。独立 `relative_time` suite 使用固定
+`as_of=2025-11-19T12:00:00Z`，只验证解析器能在 gold 已进入候选池时改善排序。
+
+**结论：保持 `DEFAULT_FLAGS["relative_time"] = False`。** 代理集跨三个 seed 提升 MRR 且
+Recall@20 无回退，但题型宽度仍小，官方协议又没有查询时点字段；在宿主明确提供可靠时点、
+并用自身数据过门以前，不把它作为生产默认。以上数字全是**合成数据上的观测值**，
+官方数据表现仍为 `unknown`。
+
+复现时必须把经典短板和新代理集分开跑、分开报告：
+
+```bash
+python3 scripts/run_eval.py --scale small --difficulty mixed --suite classic \
+  --seeds 20260806,20260807,20260808 --top-k 100 \
+  --stages L9_guarded_supersession,L11_relative_time_ctrl
+python3 scripts/run_eval.py --scale small --difficulty mixed --suite relative_time \
+  --seeds 20260806,20260807,20260808 --top-k 100 \
+  --stages L9_guarded_supersession,L11_relative_time_ctrl
+```
 
 ## 5. 向量分支（`vector`）
 
