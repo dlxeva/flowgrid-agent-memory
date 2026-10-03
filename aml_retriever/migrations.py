@@ -657,6 +657,9 @@ def inspect_schema(db_path: str) -> SchemaReport:
         )
     try:
         con.execute("PRAGMA query_only=ON")
+        # Keep inventory, layouts, and metadata in one read snapshot even if
+        # another process atomically initializes or migrates the database.
+        con.execute("BEGIN")
         tables = _object_names(con, "table")
         triggers = _object_names(con, "trigger")
         indexes = _object_names(con, "index")
