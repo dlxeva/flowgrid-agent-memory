@@ -3,6 +3,15 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-journal
 .DS_Store
 data/
 .venv/
@@ -38,8 +47,35 @@ GOAL_EVOLUTION.md
 ANCHORS.md
 RATIONALE_TRAIL.md
 LESSONS_LEARNED.md
+MEMORY.md
+AGENTS.md
+
+# Private local runtime and generated observations
+runtime/
+cache/
+caches/
+reports/
+report/
+backups/
+scratch/
+sessions/
+conversations/
+transcripts/
+memories/
+.hermes/
+.zcode/
+.ssh/
+.aws/
 
 # Local credentials
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.token
+*.keystore
+*credentials*.json
+*secret*.json

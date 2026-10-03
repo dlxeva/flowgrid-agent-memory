@@ -1530,7 +1530,7 @@ def _op_proxy_wire_contract(fixture: Mapping[str, Any], _runtime: EvaluationRunt
             headers["Content-Type"] = "application/json; charset=utf-8"
             headers["Content-Length"] = str(len(raw))
         if authorized:
-            headers["Authorization"] = "Bearer governance-eval-key"
+            headers["Authorization"] = "Bearer synthetic-governance-eval-key"
         try:
             connection.request(method, path, body=raw, headers=headers)
             response = connection.getresponse()
@@ -1554,7 +1554,7 @@ def _op_proxy_wire_contract(fixture: Mapping[str, Any], _runtime: EvaluationRunt
             host="127.0.0.1",
             port=0,
             auth_mode="bearer",
-            api_key="governance-eval-key",
+            api_key="synthetic-governance-eval-key",
         )
         server = RetrieverServer(config, quiet=True)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

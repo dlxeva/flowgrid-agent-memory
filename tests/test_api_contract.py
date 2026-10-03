@@ -314,6 +314,79 @@ class TestSearchContract(ServiceCase):
         self.assertTrue(all("秘密内容" not in item["content"] for item in body["data"]))
 
 
+class TestStreamingContract(ServiceCase):
+    """Cycle 2 Streaming uses repeated Add/Search checkpoints, not a new endpoint."""
+
+    def test_incremental_add_is_immediately_visible_at_each_checkpoint(self):
+        expected = []
+        for index, value in enumerate(("alpha", "beta", "gamma"), start=1):
+            expected.append(value)
+            receipt = self.service.official_add(
+                _payload(
+                    request_id=f"stream-{index}",
+                    user_id="stream-u",
+                    session_id="stream-session",
+                    contents=(f"ProjectOrchid checkpoint value is {value}",),
+                )
+            )
+            self.assertIs(receipt["success"], True)
+
+            body = self.service.official_search(
+                {
+                    "query": "What are the ProjectOrchid checkpoint values?",
+                    "options": ["alpha", "beta", "gamma"],
+                    "user_id": "stream-u",
+                    "top_k": 100,
+                }
+            )
+            returned = "\n".join(item["content"] for item in body["data"])
+            for seen in expected:
+                self.assertIn(seen, returned)
+
+    def test_incremental_retry_does_not_duplicate_a_chunk(self):
+        first = _payload(
+            request_id="stream-retry-1",
+            user_id="stream-retry-u",
+            session_id="stream-retry-session",
+            contents=("ProjectCedar checkpoint one",),
+        )
+        self.service.official_add(first)
+        self.service.official_add(first)
+        self.service.official_add(
+            _payload(
+                request_id="stream-retry-2",
+                user_id="stream-retry-u",
+                session_id="stream-retry-session",
+                contents=("ProjectCedar checkpoint two",),
+            )
+        )
+        self.assertEqual(self.service.db.count("stream-retry-u"), 2)
+
+    def test_session_id_does_not_narrow_streaming_retrieval(self):
+        self.service.official_add(
+            _payload(
+                request_id="stream-session-a",
+                user_id="stream-scope-u",
+                session_id="source-session-a",
+                contents=("ProjectMaple evidence from source A",),
+            )
+        )
+        self.service.official_add(
+            _payload(
+                request_id="stream-session-b",
+                user_id="stream-scope-u",
+                session_id="source-session-b",
+                contents=("ProjectMaple evidence from source B",),
+            )
+        )
+        body = self.service.official_search(
+            {"query": "ProjectMaple evidence", "user_id": "stream-scope-u", "top_k": 100}
+        )
+        returned = "\n".join(item["content"] for item in body["data"])
+        self.assertIn("source A", returned)
+        self.assertIn("source B", returned)
+
+
 class TestHttpEndToEnd(unittest.TestCase):
     """真实 HTTP 端到端 smoke：验证传输层、鉴权与健康检查。"""
 
@@ -424,8 +497,8 @@ class TestHttpEndToEnd(unittest.TestCase):
         status, _ = self._call("/nope", {"a": 1})
         self.assertEqual(status, 404)
 
-    def test_no_202_or_task_id(self):
-        """官方明确禁止返回 202 / task id / 状态查询地址。"""
+    def test_unbound_sync_profile_never_returns_202(self):
+        """本实现未申报 Add Status URL，因此必须坚持同步 200。"""
         status, body = self._call("/add", _payload(request_id="http-2", user_id="http-u2"))
         self.assertEqual(status, 200)
         self.assertNotIn("task_id", body)

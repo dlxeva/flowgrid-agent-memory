@@ -1,6 +1,6 @@
 # Add / Search API Contract
 
-Reference sources checked on 2026-08-06:
+Reference sources checked on 2026-10-03 for AML Cycle 2:
 
 - 官方 API 指南：<https://agentmemories.ai/api-guide>（章节 `05 ADD / SEARCH CONTRACT`、`06 ERROR HANDLING`）
 - 官方公开评测代码：<https://github.com/AML-memory/agent-memory-leaderboard>（README「Disclosed production parameters」）
@@ -29,7 +29,8 @@ current official documentation before running a new evaluation.
 
 ## 3. POST Add
 
-平台每个来源会话默认调用一次 Add；超过 **20 条消息或 2000 词**时在最近的完整消息或句子边界分段。
+平台按样本和来源会话调用 Add；普通文本达到 **20 条消息或 2000 词**中的任一边界时确定性分段。
+Cycle 2 的 Streaming 任务按增量会话／任务单元重复调用同一 Add/Search 契约，不增加单独的 Streaming endpoint。
 
 请求（只包含下列字段）：
 
@@ -58,7 +59,8 @@ current official documentation before running a new evaluation.
 
 - `success` 必须是布尔 `true`；三个 ID 必须与请求完全一致。
 - 内部可异步处理，但接口必须等待完成再返回。
-- **禁止**返回 HTTP 202 / task ID / 状态查询地址；无需 `memory_ids`。
+- 本仓库使用同步 profile，只返回 HTTP 200，不返回 `task_id` 或状态查询地址。
+- 官方允许 HTTP 202 的前提是：提交版本已经审核绑定包含 `{task_id}` 的 Add Status URL；未绑定时返回 202 仍是契约错误。当前实现未申报、也未实现这一可选 profile。
 
 ## 4. POST Search
 
@@ -111,7 +113,7 @@ current official documentation before running a new evaluation.
 | 429 | 限流 / 配额 | 有限重试 |
 | 5xx | 临时异常 | 自动退避重试 |
 
-- 自动重试范围：Add = {408,409,425,429,500,502,503,504}；Search = 同上但**不含 409**。
+- 自动重试范围：Add = {408,409,425,429,500,502,503,504,524}；Search = {408,425,429,500,502,503,504}。
 - **格式错误立即终止**：即使 HTTP 200，只要 Add 未返回 `success=true` / 三个 ID 不对，或 Search 未返回 `data` 数组 / 某条缺 `id`/`content`，当前阶段立即失败。
 
 ## 5.1 本实现的校验矩阵（2026-08-07 收紧）
@@ -179,3 +181,12 @@ current official documentation before running a new evaluation.
 - 评测数据及派生副本**只能用于完成当前任务**，不得用于模型训练、微调、产品分析、数据集重建或对外传播。
 - 仅向必要人员开放，**避免记录不必要的请求正文**，任务完成后 **30 天内删除**；延长保留需事先书面同意。
 - 禁止跨 `user_id` 返回记忆；`session_id` 只用于组织来源会话。
+
+## 8. Cycle 2 参赛与运行门（2026-10-03）
+
+- 第二期于 2026-09-20 00:00（UTC+8）开放；完整材料截止 2026-10-31 23:59，评测于 2026-11-04 23:59 停止。
+- 文本赛道包含长对话、跨会话、时间、治理、个性化、规则与 **Streaming 持续记忆**。
+- 开源方法榜也必须由参赛方托管可公开访问的 Add/Search API；公开仓库或 Docker 不能替代在线 endpoint。
+- 申请材料需包含系统与版本、联系人、赛道、方法说明、公开展示信息、在线 endpoint、鉴权与容量声明、公开仓库、固定 commit、上游归属和全部方法改动。
+- Smoke 每小时最多 1 次、本届每赛道最多 30 次；Full 每个 AML Key、每赛道最多 2 次，第二次须在第一次 Full 完成 30 天后发起。
+- Full 通常需要约 0.5—2 天。提交前必须冻结版本；已接受的正式 Full 版本不能因成绩不理想而替换或撤回。

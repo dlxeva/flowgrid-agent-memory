@@ -9,7 +9,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from aml_retriever import migrations as schema_migrations
 from aml_retriever.facade import FlowGridMemory
 from aml_retriever.extraction import ExtractionValidationError
 from aml_retriever.governance import GovernanceError
@@ -60,6 +62,69 @@ class TestReadOnlySchemaInspection(unittest.TestCase):
                 pass
             self.assertEqual(inspect_schema(str(path)).status, "ready")
 
+    def test_inspection_keeps_one_snapshot_during_atomic_initialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.db"
+            # Keep WAL mode active so the child can commit while inspection
+            # holds its read snapshot, without waiting for the reader to exit.
+            keeper = sqlite3.connect(str(path))
+            try:
+                self.assertEqual(
+                    keeper.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal"
+                )
+                inventories = {}
+                transactions = []
+                original = schema_migrations._object_names
+                env = dict(os.environ)
+                env["PYTHONPATH"] = str(REPO)
+                child = (
+                    "import sys\n"
+                    "from aml_retriever.facade import FlowGridMemory\n"
+                    "with FlowGridMemory(db_path=sys.argv[1]): pass\n"
+                    "print('OK')\n"
+                )
+
+                def inspect_then_initialize(con, object_type):
+                    names = original(con, object_type)
+                    inventories[object_type] = names
+                    transactions.append(con.in_transaction)
+                    self.assertEqual(con.execute("PRAGMA query_only").fetchone()[0], 1)
+                    if object_type == "table":
+                        self.assertEqual(names, set())
+                        with self.assertRaises(sqlite3.OperationalError):
+                            con.execute("CREATE TABLE inspection_write_probe(id INTEGER)")
+                        completed = subprocess.run(
+                            [sys.executable, "-c", child, str(path)],
+                            cwd=str(REPO),
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        self.assertEqual(
+                            completed.returncode,
+                            0,
+                            f"child initialization failed: {completed!r}",
+                        )
+                        self.assertEqual(completed.stdout.strip(), "OK")
+                    return names
+
+                with mock.patch.object(
+                    schema_migrations, "_object_names", side_effect=inspect_then_initialize
+                ):
+                    report = inspect_schema(str(path))
+                self.assertEqual(report.status, "uninitialized")
+                self.assertTrue(report.compatible)
+                self.assertTrue(report.read_only)
+                self.assertEqual(
+                    inventories,
+                    {kind: set() for kind in ("table", "trigger", "index", "view")},
+                )
+                self.assertEqual(transactions, [True] * 4)
+                self.assertEqual(inspect_schema(str(path)).status, "ready")
+            finally:
+                keeper.close()
+
     def test_ingest_request_receipt_binding_is_immutable(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "memory.db"
@@ -93,11 +158,7 @@ class TestReadOnlySchemaInspection(unittest.TestCase):
                 "from aml_retriever.facade import FlowGridMemory\n"
                 "Path(sys.argv[3]).touch()\n"
                 "while not Path(sys.argv[2]).exists(): time.sleep(0.005)\n"
-                "try:\n"
-                "    with FlowGridMemory(db_path=sys.argv[1]): pass\n"
-                "except BaseException:\n"
-                "    print('ERR')\n"
-                "    raise SystemExit(1)\n"
+                "with FlowGridMemory(db_path=sys.argv[1]): pass\n"
                 "print('OK')\n"
             )
             env = dict(os.environ)
@@ -133,9 +194,18 @@ class TestReadOnlySchemaInspection(unittest.TestCase):
                 )
                 start.touch()
                 results = [process.communicate(timeout=30) for process in processes]
-                self.assertEqual([process.returncode for process in processes], [0] * 8)
+                diagnostics = "\n".join(
+                    f"child {index}: returncode={process.returncode}\n"
+                    f"stdout={stdout!r}\nstderr={stderr!r}"
+                    for index, (process, (stdout, stderr)) in enumerate(
+                        zip(processes, results)
+                    )
+                )
                 self.assertEqual(
-                    [stdout.strip() for stdout, _stderr in results], ["OK"] * 8
+                    [process.returncode for process in processes], [0] * 8, diagnostics
+                )
+                self.assertEqual(
+                    [stdout.strip() for stdout, _stderr in results], ["OK"] * 8, diagnostics
                 )
                 self.assertEqual(inspect_schema(str(path)).status, "ready")
             finally:

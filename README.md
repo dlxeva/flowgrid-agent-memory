@@ -12,6 +12,9 @@ Evidence-first, governed local memory for AI agents.
 [Data lifecycle](docs/DATA_LIFECYCLE.md) · [Evaluation](docs/EVAL.md) ·
 [Acceptance](docs/ACCEPTANCE_CRITERIA.md)
 
+[AML Cycle 2 candidate](docs/AML_SUBMISSION.md) ·
+[Reproducible release](docs/RELEASE.md) · [AML deployment](docs/AML_DEPLOYMENT.md)
+
 FlowGrid Agent Memory is a general local memory core. It preserves raw evidence,
 separates proposals from confirmed truth, resolves only current governed state,
 and compiles a minimal authorized context pack for an agent. Its central rule
@@ -29,15 +32,18 @@ public distribution.
 
 ## Product status
 
-- Product version: `0.1.0`
+- Product version: `0.1.1`
 - AML Add/Search adapter version: `1.1.0`
 - Base runtime: Python 3.11+, standard library only, SQLite with FTS5
 - Product surfaces: Python facade, local CLI, authenticated loopback REST v1,
   and an optional official MCP SDK v2 stdio adapter
 - Supported deployment boundary: local and controlled by one trusted host;
   `user_id` is a logical partition within that boundary
-- Not included: hosted multitenancy, a public network service, or a production
-  remote-security perimeter
+- A separate AML evaluation service provides authenticated Add/Search behind
+  a TLS proxy. It uses a dedicated evaluation database and credential; the
+  governed REST and MCP trust boundaries remain local.
+- Hosted availability and official AML Smoke/Full acceptance require separate
+  live evidence. The repository alone does not establish either result.
 
 ## Why it is different
 

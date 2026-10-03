@@ -11,6 +11,9 @@
 [数据生命周期](docs/DATA_LIFECYCLE.md) ·
 [评测](docs/EVAL.md) · [验收标准](docs/ACCEPTANCE_CRITERIA.md)
 
+[AML 第二届候选](docs/AML_SUBMISSION.md) ·
+[可复现发布](docs/RELEASE.md) · [AML 部署](docs/AML_DEPLOYMENT.md)
+
 FlowGrid Agent Memory 保存不可改写的原始证据，把提取结果与已确认事实分开，只解析
 当前有效的受治理状态，再按授权和披露策略编译成供 Agent 使用的最小 ContextPack。
 文本被存储或被模型提取，不代表它已经成为事实。
@@ -24,13 +27,15 @@ FlowGrid Agent Memory 保存不可改写的原始证据，把提取结果与已�
 
 ## 当前产品状态
 
-- 产品版本：`0.1.0`
+- 产品版本：`0.1.1`
 - AML Add/Search 适配层版本：`1.1.0`
 - 基础运行环境：Python 3.11+、标准库、启用 FTS5 的 SQLite
 - 已有接口：Python 门面、本地 CLI、带认证的 loopback REST v1，以及基于官方
   MCP SDK v2 的可选 stdio 适配器
 - 当前支持边界：由一个可信宿主管理的本地部署，`user_id` 是该边界内的逻辑分区
-- 当前不包含：托管多租户、公网服务或生产级远程安全边界
+- 独立 AML 评测服务在 TLS 代理后提供带鉴权的 Add/Search，并使用专用评测数据库和
+  凭据。受治理 REST 与 MCP 的信任边界仍是本地可信宿主。
+- 公网可用性和 AML 官方 Smoke/Full 验收需要线上证据；仓库中的实现不代表已经通过。
 
 ## FlowGrid 的核心记忆哲学
 

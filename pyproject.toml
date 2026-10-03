@@ -34,6 +34,7 @@ mcp = ["mcp>=2,<3"]
 flowgrid-memory = "flowgrid_memory.cli:main"
 flowgrid-memory-rest = "flowgrid_memory.rest:main"
 flowgrid-memory-mcp = "flowgrid_memory.mcp:main"
+flowgrid-memory-aml = "aml_retriever.aml_hosted:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "aml_retriever._version.PRODUCT_VERSION"}
@@ -43,9 +44,10 @@ where = ["."]
 include = ["flowgrid_memory*", "aml_retriever*"]
 
 [tool.setuptools.package-data]
+"aml_retriever" = ["release_identity.json"]
 "aml_retriever.evaluation" = [
-  "fixtures/*.json",
-  "baselines/*.json",
+  "fixtures/governance_v1.json",
+  "baselines/legacy_v11_small.json",
 ]
 
 "flowgrid_memory" = ["py.typed"]
