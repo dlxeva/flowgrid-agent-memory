@@ -296,6 +296,54 @@ class WheelInstallerTests(unittest.TestCase):
                 self.assertEqual(actual, expected)
 
 
+class CapacityRejectionTests(unittest.TestCase):
+    """No parser/service needed: verify graceful close order and hard bounds."""
+
+    def server_and_socket(self):
+        server = mock.MagicMock(spec=HostedAMLServer)
+        server.config = HostedConfig(credential=KEY, db_path=":memory:")
+        request = mock.MagicMock(spec=socket.socket)
+        return server, request
+
+    def test_response_then_write_half_close_then_drain_then_close(self):
+        server, request = self.server_and_socket()
+        order = mock.Mock()
+        order.attach_mock(request, "socket")
+        order.attach_mock(server.close_request, "close")
+        request.recv.side_effect = [b"synthetic request header", b""]
+        with mock.patch("aml_retriever.aml_hosted.time.monotonic", side_effect=[0.0, 0.001, 0.002]):
+            HostedAMLServer._reject_capacity(server, request)
+        important = [call[0] for call in order.mock_calls if call[0] in {"socket.sendall", "socket.shutdown", "socket.recv", "close"}]
+        self.assertEqual(important, ["socket.sendall", "socket.shutdown", "socket.recv", "socket.recv", "close"])
+        request.shutdown.assert_called_once_with(socket.SHUT_WR)
+        self.assertIn(b"429 Too Many Requests", request.sendall.call_args.args[0])
+        self.assertIn(b"Retry-After: 1", request.sendall.call_args.args[0])
+        server.close_request.assert_called_once_with(request)
+
+    def test_continuous_input_is_stopped_at_64_kib_with_4_kib_buffers(self):
+        server, request = self.server_and_socket()
+        request.recv.return_value = b"x" * 4096
+        with mock.patch("aml_retriever.aml_hosted.time.monotonic", return_value=0.0):
+            HostedAMLServer._reject_capacity(server, request)
+        self.assertEqual(request.recv.call_count, 16)
+        self.assertTrue(all(call.args == (4096,) for call in request.recv.call_args_list))
+        server.close_request.assert_called_once_with(request)
+
+    def test_absolute_drain_deadline_and_socket_timeout_both_close(self):
+        server, request = self.server_and_socket()
+        with mock.patch("aml_retriever.aml_hosted.time.monotonic", side_effect=[0.0, 0.051]):
+            HostedAMLServer._reject_capacity(server, request)
+        request.recv.assert_not_called()
+        server.close_request.assert_called_once_with(request)
+        server, request = self.server_and_socket()
+        request.recv.side_effect = socket.timeout()
+        with mock.patch("aml_retriever.aml_hosted.time.monotonic", side_effect=[0.0, 0.01]):
+            HostedAMLServer._reject_capacity(server, request)
+        self.assertAlmostEqual(request.settimeout.call_args.args[0], 0.04)
+        request.recv.assert_called_once_with(4096)
+        server.close_request.assert_called_once_with(request)
+
+
 class HostedHTTPTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="aml-hosted-test-")
@@ -449,6 +497,29 @@ class HostedHTTPTests(unittest.TestCase):
             for _ in range(held):
                 self.server.connections.release()
         self.assertEqual(self.request("/health", method="GET", key=None)[0], 200)
+
+    def test_connection_rejection_handles_partial_input_without_blocking_accept(self):
+        held = 0
+        try:
+            while self.server.connections.acquire(blocking=False):
+                held += 1
+            with socket.create_connection(self.server.server_address, timeout=2) as connection:
+                connection.sendall(b"GET /health HTTP/1.1\r\nX-Partial: ")
+                response = b""
+                while part := connection.recv(4096):
+                    response += part
+                self.assertIn(b"429 Too Many Requests", response)
+                self.assertIn(b"Retry-After: 1", response)
+                self.assertIn(b"capacity limit reached", response)
+                # Keep this unfinished inbound stream open while freeing the
+                # admission slots. Its drain must expire so accept can resume.
+                for _ in range(held):
+                    self.server.connections.release()
+                held = 0
+                self.assertEqual(self.request("/health", method="GET", key=None)[0], 200)
+        finally:
+            for _ in range(held):
+                self.server.connections.release()
 
     def test_slow_header_connection_has_absolute_deadline(self):
         # Keep every idle interval shorter than the socket idle timeout.

@@ -40,6 +40,10 @@ _REASONS = {
     431: "request headers too large",
 }
 _AUTH_MODES = frozenset({"bearer", "token", "x-api-key"})
+_REJECT_SEND_TIMEOUT_SECONDS = 0.1
+_REJECT_DRAIN_TIMEOUT_SECONDS = 0.05
+_REJECT_DRAIN_BUFFER_BYTES = 4096
+_REJECT_DRAIN_MAX_BYTES = 65536
 
 
 class HostedConfigurationError(ValueError):
@@ -405,25 +409,48 @@ class HostedAMLServer(ThreadingHTTPServer):
 
     def process_request(self, request, client_address) -> None:
         if not self.connections.acquire(blocking=False):
-            raw = json.dumps({"detail": {"reason": _REASONS[429]}}).encode("utf-8")
-            response = (
-                f"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\n"
-                f"Content-Length: {len(raw)}\r\nRetry-After: {self.config.retry_after_seconds}\r\n"
-                "Connection: close\r\nCache-Control: no-store\r\n\r\n"
-            ).encode("ascii") + raw
-            try:
-                request.settimeout(0.1)
-                request.sendall(response)
-            except OSError:
-                pass
-            finally:
-                self.shutdown_request(request)
+            self._reject_capacity(request)
             return
         try:
             super().process_request(request, client_address)
         except Exception:
             self.connections.release()
             self.shutdown_request(request)
+
+    def _reject_capacity(self, request) -> None:
+        """Deliver 429 before closing an unparsed connection, with fixed bounds.
+
+        Closing a socket with unread input can reset the connection and discard
+        the response on Windows. Half-close the write side, then discard at
+        most 64 KiB of inbound bytes in 4 KiB buffers for at most 50 ms. No
+        request parsing, body retention, worker or timer is needed. Including
+        the 100 ms send timeout, this accept-thread path has a 150 ms I/O bound.
+        """
+        raw = json.dumps({"detail": {"reason": _REASONS[429]}}).encode("utf-8")
+        response = (
+            f"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(raw)}\r\nRetry-After: {self.config.retry_after_seconds}\r\n"
+            "Connection: close\r\nCache-Control: no-store\r\n\r\n"
+        ).encode("ascii") + raw
+        try:
+            request.settimeout(_REJECT_SEND_TIMEOUT_SECONDS)
+            request.sendall(response)
+            request.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + _REJECT_DRAIN_TIMEOUT_SECONDS
+            drained = 0
+            while drained < _REJECT_DRAIN_MAX_BYTES:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                request.settimeout(remaining)
+                received = len(request.recv(min(_REJECT_DRAIN_BUFFER_BYTES, _REJECT_DRAIN_MAX_BYTES - drained)))
+                if received == 0:
+                    break
+                drained += received
+        except OSError:
+            pass
+        finally:
+            self.close_request(request)
 
     def process_request_thread(self, request, client_address) -> None:
         # Absolute connection lifetime also bounds slow/drip-fed HTTP headers.
