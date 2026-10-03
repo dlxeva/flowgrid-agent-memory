@@ -9,7 +9,7 @@ accepted bind address is the literal IPv4 loopback address `127.0.0.1`.
 Run with an explicit product configuration:
 
 ```bash
-export FLOWGRID_MEMORY_BEARER_TOKEN='replace-with-a-local-secret'
+export FLOWGRID_MEMORY_BEARER_TOKEN='example-replace-with-a-local-secret'
 flowgrid-memory-rest --config /absolute/path/to/product.json
 ```
 

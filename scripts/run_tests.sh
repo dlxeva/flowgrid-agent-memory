@@ -58,6 +58,9 @@ section "2. CLI 端到端自检"
 section "3. AML Add/Search 官方契约 smoke"
 "$PY" scripts/smoke_api.py
 
+section "3a. 独立 AML 评测服务 smoke"
+"$PY" scripts/smoke_aml_hosted.py
+
 section "4. Governed REST v1 smoke"
 "$PY" scripts/smoke_rest_v1.py
 

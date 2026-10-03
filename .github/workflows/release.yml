@@ -45,10 +45,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip 'setuptools>=77' build
           python -m pip install -e '.[mcp]'
+      - name: Verify indexed public source boundary
+        run: python scripts/check_public_boundary.py
       - name: Run full acceptance suite
         run: ./scripts/run_tests.sh --with-mcp
-      - name: Build wheel and sdist
-        run: python -m build
+      - name: Reproducible offline wheel and sdist verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="${RUNNER_TEMP}/release-artifacts"
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python scripts/verify_release.py \
+            --output "$artifacts" \
+            --work-parent "$RUNNER_TEMP" \
+            --require-committed
+          mkdir -p dist
+          cp "$artifacts"/* dist/
       - name: Fresh wheel install and smoke
         shell: bash
         run: |
@@ -96,10 +108,53 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.version.outputs.tag }}"
+          tag_ref="refs/tags/${tag}"
+          # Recover only the tag-pushed / Release-not-created state.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release ${tag} already exists" >&2
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" "$GITHUB_SHA" -m "FlowGrid Agent Memory ${tag}"
-          git push origin "$tag"
+          local_tag_exists=0
+          if git show-ref --verify --quiet "$tag_ref"; then
+            local_tag_exists=1
+            if ! local_commit="$(git rev-parse --verify "${tag_ref}^{commit}" 2>/dev/null)"; then
+              echo "existing local tag ${tag} does not resolve to a commit" >&2
+              exit 1
+            fi
+            if [[ "$local_commit" != "$GITHUB_SHA" ]]; then
+              echo "existing local tag ${tag} conflicts with this release commit" >&2
+              exit 1
+            fi
+          fi
+          if ! remote_refs="$(git ls-remote --tags origin "$tag_ref" "${tag_ref}^{}")"; then
+            echo "cannot inspect remote tag ${tag}" >&2
+            exit 1
+          fi
+          remote_commit="$(printf '%s\n' "$remote_refs" | awk -v ref="${tag_ref}^{}" '$2 == ref { print $1 }')"
+          if [[ -z "$remote_commit" ]]; then
+            remote_commit="$(printf '%s\n' "$remote_refs" | awk -v ref="$tag_ref" '$2 == ref { print $1 }')"
+          fi
+          if [[ -n "$remote_commit" ]]; then
+            if [[ "$remote_commit" != "$GITHUB_SHA" ]]; then
+              echo "existing remote tag ${tag} conflicts with this release commit" >&2
+              exit 1
+            fi
+            if [[ "$local_tag_exists" == 0 ]]; then
+              git fetch --no-tags origin "${tag_ref}:${tag_ref}"
+              fetched_commit="$(git rev-parse --verify "${tag_ref}^{commit}")"
+              if [[ "$fetched_commit" != "$GITHUB_SHA" ]]; then
+                echo "fetched tag ${tag} changed during release preparation" >&2
+                exit 1
+              fi
+            fi
+          else
+            if [[ "$local_tag_exists" == 0 ]]; then
+              git tag -a "$tag" "$GITHUB_SHA" -m "FlowGrid Agent Memory ${tag}"
+            fi
+            git push origin "${tag_ref}:${tag_ref}"
+          fi
           mkdir -p release-assets
           cp dist/* release-assets/
           cp release-evidence/* release-assets/

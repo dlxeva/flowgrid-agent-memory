@@ -1,0 +1,5 @@
+# Keep publication inputs byte-stable across Windows and Unix checkouts.
+* text=auto eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.sh text eol=lf

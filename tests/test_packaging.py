@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 from tests.legacy_fixture import create_legacy_database
+from aml_retriever._version import PRODUCT_VERSION
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -99,7 +100,7 @@ class TestOfflineWheel(unittest.TestCase):
             )
             metadata = email.message_from_bytes(archive.read(metadata_name))
         self.assertEqual(metadata["Name"], "flowgrid-agent-memory")
-        self.assertEqual(metadata["Version"], "0.1.0")
+        self.assertEqual(metadata["Version"], PRODUCT_VERSION)
         requirements = metadata.get_all("Requires-Dist") or []
         self.assertEqual(len(requirements), 1)
         normalized = requirements[0].replace(" ", "").replace('"', "'")
@@ -193,7 +194,7 @@ class TestOfflineWheel(unittest.TestCase):
             env=self.env,
         )
         info = json.loads(imported.stdout)
-        self.assertEqual(info["product"], "0.1.0")
+        self.assertEqual(info["product"], PRODUCT_VERSION)
         self.assertEqual(info["adapter"], "1.1.0")
         self.assertTrue(info["mcp_missing"])
         self.assertEqual(info["mcp_error"], "mcp_dependency_unavailable")
@@ -213,7 +214,7 @@ class TestOfflineWheel(unittest.TestCase):
         self.assertIn("No broken requirements found", checked.stdout)
 
         version = _run([str(cli), "--version"], cwd=self.build_cwd, env=self.env)
-        self.assertIn("0.1.0", version.stdout)
+        self.assertIn(PRODUCT_VERSION, version.stdout)
         doctor = _run(
             [str(python), "-I", "-m", "aml_retriever.product_cli", "doctor", "--ephemeral"],
             cwd=self.build_cwd,

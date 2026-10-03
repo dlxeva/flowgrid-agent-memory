@@ -22,6 +22,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip 'setuptools>=77'
       - run: python -m pip install -e .
+      - name: Verify public source boundary
+        run: python scripts/check_public_boundary.py
       - run: ./scripts/run_tests.sh
 
   windows:
@@ -37,6 +39,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip 'setuptools>=77'
       - run: python -m pip install -e .
+      - run: python scripts/check_public_boundary.py
       - run: python -m unittest discover -s tests
       - run: python -m aml_retriever.cli selfcheck
 
@@ -51,6 +54,31 @@ jobs:
       - run: python -m pip install --upgrade pip 'setuptools>=77'
       - run: python -m pip install -e '.[mcp]'
       - run: ./scripts/run_tests.sh --with-mcp
+
+  release-verification:
+    name: Offline reproducible release / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install 'setuptools>=77'
+      - run: python scripts/check_public_boundary.py
+      - name: Rebuild and install both archives offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python scripts/verify_release.py \
+            --output "$RUNNER_TEMP/release-artifacts" \
+            --work-parent "$RUNNER_TEMP" \
+            --require-committed
 
   container:
     name: Container contract
