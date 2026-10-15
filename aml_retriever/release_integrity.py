@@ -7,6 +7,29 @@ from pathlib import Path
 
 
 RUNTIME_SOURCE_FILES = frozenset({
+    'aml_retriever/host_lifecycle_writes.py',
+    'aml_retriever/host_lifecycle_reads.py',
+        'aml_retriever/completion_adapter.py',
+        'aml_retriever/date_expression.py',
+        'aml_retriever/date_meaning_adapter.py',
+        'aml_retriever/durable_extraction.py',
+        'aml_retriever/extraction_constraints.py',
+        'aml_retriever/host_review_events.py',
+        'aml_retriever/lexical_commitment_adapter.py',
+        'aml_retriever/numeric_composition.py',
+        'aml_retriever/numeric_evidence_adapter.py',
+        'aml_retriever/numeric_selection.py',
+        'aml_retriever/reference_evidence_adapter.py',
+        'aml_retriever/sentence_scope_adapter.py',
+        'aml_retriever/source_calendar.py',
+        'aml_retriever/temporal_comparison.py',
+        'aml_retriever/user_evidence_adapter.py',
+        'aml_retriever/user_evidence_policy.py',
+        'aml_retriever/validity_host.py',
+        'aml_retriever/validity_local_demo.py',
+        'aml_retriever/validity_local_lock.py',
+        'aml_retriever/validity_retention.py',
+        'aml_retriever/validity_review.py',
     "aml_retriever/__init__.py", "aml_retriever/_version.py", "aml_retriever/access.py",
     "aml_retriever/aml_hosted.py", "aml_retriever/api.py", "aml_retriever/auth.py",
     "aml_retriever/cli.py", "aml_retriever/compiler.py", "aml_retriever/config.py",
@@ -48,12 +71,17 @@ def runtime_source_digest(root: Path | None = None) -> tuple[list[str], str]:
             raise ValueError("runtime_package_missing_or_link")
         for path in directory.rglob("*"):
             relative = path.relative_to(base).as_posix()
-            if "__pycache__" in path.parts or relative == "aml_retriever/release_identity.json":
-                continue
-            if path.suffix not in {".py", ".json"} and path.name != "py.typed":
-                continue
-            if path.is_symlink() or base not in path.resolve().parents or not path.is_file():
+            # Check links before either exclusion, including linked directories.
+            if path.is_symlink() or base not in path.resolve().parents:
                 raise ValueError("runtime_file_missing_or_link")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise ValueError("runtime_file_missing_or_link")
+            if "__pycache__" in path.relative_to(directory).parts or relative == "aml_retriever/release_identity.json":
+                continue
+            # Every other package file is inventoried, including extension modules,
+            # legacy sourceless bytecode and non-code resources.
             discovered.add(relative)
     if discovered != RUNTIME_SOURCE_FILES:
         raise ValueError("runtime_file_set_mismatch")

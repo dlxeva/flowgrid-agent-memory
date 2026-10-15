@@ -36,11 +36,13 @@ from .auth import (
 from .extraction import ExtractionConflict, ExtractionError
 from .facade import FlowGridMemory
 from .governance import GovernanceConflict, GovernanceError
-from .context import (
-    MAX_CONTEXT_RECORDS,
-    MAX_CONTEXT_REQUEST_CHARS,
-    ContextCompiler,
-)
+from .context import ContextCompiler
+from . import context as _context_contract
+from .host_lifecycle_reads import LifecycleMemoryReader, HostReadError, DeferredReadMemory
+from .host_lifecycle_writes import LifecycleCandidateWriter, HostWriteError, DeferredCandidateMemory
+
+_READ_MAX_RECORDS = getattr(_context_contract, 'MAX_CONTEXT_RECORDS', 10_000)
+_READ_MAX_CHARS = getattr(_context_contract, 'MAX_CONTEXT_REQUEST_CHARS', 16 * 1_048_576)
 
 
 REST_SCHEMA = "flowgrid.rest/v1"
@@ -392,11 +394,22 @@ class GovernedRestAdapter:
         *,
         memory_factory=FlowGridMemory,
         server_class=None,
+        lifecycle_reader_factory=None,
+        lifecycle_writer_factory=None,
     ):
         if not isinstance(config, GovernedRestConfig):
             raise _config_error()
         # Re-run immutable config validation before the first writable DB open.
         config.__post_init__()
+        if lifecycle_reader_factory is not None and (not callable(lifecycle_reader_factory)
+                or config.db_path == ':memory:' or memory_factory is not FlowGridMemory):
+            raise _config_error()
+        if lifecycle_writer_factory is not None and (not callable(lifecycle_writer_factory) or lifecycle_reader_factory is None):
+            raise _config_error()
+        self._reader_factory = lifecycle_reader_factory
+        self._writer_factory = lifecycle_writer_factory
+        self._read_memory = (DeferredCandidateMemory(self._memory_active) if lifecycle_writer_factory is not None
+            else DeferredReadMemory(self._memory_active))
         self.config = config
         self._closed = False
         self._closing = False
@@ -405,7 +418,7 @@ class GovernedRestAdapter:
         self._serve_started = threading.Event()
         self._memory = None
         self._server = None
-        memory = memory_factory(db_path=config.db_path)
+        memory = memory_factory(db_path=config.db_path) if lifecycle_reader_factory is None else None
         self._memory = memory
         server_type = server_class or _LoopbackThreadingHTTPServer
         server = None
@@ -419,7 +432,8 @@ class GovernedRestAdapter:
             try:
                 if server is not None:
                     server.server_close()
-                memory.close()
+                if memory is not None:
+                    memory.close()
             finally:
                 self._memory = None
             raise
@@ -477,6 +491,7 @@ class GovernedRestAdapter:
             with self._lifecycle:
                 while self._active_requests:
                     self._lifecycle.wait()
+                memory = self._memory  # A leased read may have opened it lazily.
             try:
                 if memory is not None:
                     memory.close()
@@ -521,16 +536,41 @@ class GovernedRestAdapter:
         return principal
 
     def _memory_active(self) -> FlowGridMemory:
-        memory = self._memory
-        if self._closed or memory is None:
-            raise RuntimeError("REST adapter is closed")
-        return memory
+        with self._lifecycle:
+            if self._closed:
+                raise RuntimeError("REST adapter is closed")
+            if self._memory is None and self._reader_factory is not None:
+                if self._writer_factory is not None:
+                    with FlowGridMemory.open_read_only(db_path=self.config.db_path):
+                        pass
+                    self._memory = FlowGridMemory(db_path=self.config.db_path)
+                else:
+                    self._memory = FlowGridMemory.open_read_only(db_path=self.config.db_path)
+            if self._memory is None:
+                raise RuntimeError("REST adapter is closed")
+            return self._memory
+
+    def _guarded_reader(self, principal):
+        reader = self._reader_factory(self._read_memory, principal)
+        if not isinstance(reader, LifecycleMemoryReader) or reader.memory is not self._read_memory:
+            raise HostReadError('host_reader_binding_required')
+        return reader
+
+    def _guarded_writer(self, principal):
+        reader = self._guarded_reader(principal)
+        writer = self._writer_factory(self._read_memory, principal)
+        names = ('refresh_principal','serialize_user','is_user_active','is_source_active')
+        if (not isinstance(writer,LifecycleCandidateWriter) or writer.memory is not self._read_memory
+                or reader.enabled is not True or writer.enabled is not True
+                or any(getattr(writer,name)!=getattr(reader,name) for name in names)):
+            raise HostWriteError('host_writer_binding_required')
+        return writer
 
     def _begin_request(self) -> bool:
         """Acquire a lifecycle lease before parsing an accepted connection."""
 
         with self._lifecycle:
-            if self._closed or self._closing or self._memory is None:
+            if self._closed or self._closing or (self._memory is None and self._reader_factory is None):
                 return False
             self._active_requests += 1
             self._lifecycle.notify_all()
@@ -545,6 +585,11 @@ class GovernedRestAdapter:
                 self._lifecycle.notify_all()
 
     def dispatch(self, path: str, principal: TrustedPrincipal, body: object) -> tuple[int, object]:
+        if self._reader_factory is not None:
+            if path in {'/v1/memories/transition','/v1/admin/erase-user'}:
+                raise AuthorizationError()
+            if self._writer_factory is None and path in {'/v1/events','/v1/extractions'}:
+                raise AuthorizationError()
         if path == "/v1/events":
             return 200, self._events(principal, body)
         if path == "/v1/extractions":
@@ -596,13 +641,17 @@ class GovernedRestAdapter:
                     raise RequestValidationError
                 normalized_item["timestamp"] = timestamp
             normalized.append(normalized_item)
-        receipt = self._memory_active().ingest_raw_events(
+        options = dict(
             request_id=_safe_string(data["request_id"]),
             user_id=user_id,
             session_id=_optional_string(data, "session_id"),
             messages=normalized,
-            trusted_scope=access.effective_scope,
         )
+        if self._writer_factory is not None:
+            receipt = self._guarded_writer(principal).ingest_raw_events(principal=principal,
+                requested_scope=access.effective_scope, **options)
+        else:
+            receipt = self._memory_active().ingest_raw_events(trusted_scope=access.effective_scope, **options)
         return {"receipt": receipt.to_dict()}
 
     def _extractions(self, principal: TrustedPrincipal, body: object) -> dict[str, object]:
@@ -624,14 +673,18 @@ class GovernedRestAdapter:
             requested_scope=_scope(data.get("scope")),
             operation=OPERATION_EXTRACT,
         )
-        receipt = self._memory_active().extract_candidates(
+        options = dict(
             user_id=user_id,
             raw_event_ids=normalized_ids,
             idempotency_key=_safe_string(data["idempotency_key"]),
-            trusted_scope=access.effective_scope,
             # No request field can select or inject executable extraction code.
             extractor=None,
         )
+        if self._writer_factory is not None:
+            receipt = self._guarded_writer(principal).extract_candidates(principal=principal,
+                requested_scope=access.effective_scope, **options)
+        else:
+            receipt = self._memory_active().extract_candidates(trusted_scope=access.effective_scope, **options)
         return {"receipt": receipt.to_dict()}
 
     def _query(self, principal: TrustedPrincipal, body: object) -> dict[str, object]:
@@ -657,7 +710,12 @@ class GovernedRestAdapter:
             requested_scope=_scope(data.get("scope")),
             operation=OPERATION_READ_AUDIT if mode == "audit" else OPERATION_READ_CURRENT,
         )
-        max_records = _positive_int(data.get("max_records", 100), maximum=MAX_CONTEXT_RECORDS)
+        max_records = _positive_int(data.get("max_records", 100), maximum=_READ_MAX_RECORDS)
+        if self._reader_factory is not None:
+            public = self._guarded_reader(principal).compile_context(user_id=user_id, principal=principal,
+                memory_key=_optional_string(data, 'memory_key'), query=_optional_string(data,'query',maximum=10_000),
+                mode=mode, scope=access.effective_scope, as_of=_optional_string(data,'as_of'), max_records=max_records)
+            return {'result':public.to_dict()}
         result = self._memory_active().query_memory(
             user_id=user_id,
             access_context=access.access_context,
@@ -717,7 +775,14 @@ class GovernedRestAdapter:
         )
         max_chars = data.get("max_chars")
         if max_chars is not None:
-            max_chars = _nonnegative_int(max_chars, maximum=MAX_CONTEXT_REQUEST_CHARS)
+            max_chars = _nonnegative_int(max_chars, maximum=_READ_MAX_CHARS)
+        if self._reader_factory is not None:
+            pack = self._guarded_reader(principal).compile_context(user_id=user_id, principal=principal,
+                memory_key=_optional_string(data,'memory_key'), query=_optional_string(data,'query',maximum=10_000),
+                mode=mode, scope=access.effective_scope, as_of=_optional_string(data,'as_of'),
+                max_records=_positive_int(data.get('max_records',100),maximum=_READ_MAX_RECORDS),
+                max_chars=max_chars, max_tokens=None)
+            return {'context':pack.to_dict(),'injectable':mode=='current' and pack.status=='ready'}
         pack = self._memory_active().compile_context(
             user_id=user_id,
             access_context=access.access_context,
@@ -726,7 +791,7 @@ class GovernedRestAdapter:
             mode=mode,
             scope=access.effective_scope,
             as_of=_optional_string(data, "as_of"),
-            max_records=_positive_int(data.get("max_records", 100), maximum=MAX_CONTEXT_RECORDS),
+            max_records=_positive_int(data.get("max_records", 100), maximum=_READ_MAX_RECORDS),
             max_chars=max_chars,
             max_tokens=None,
             disclosure_policy=access.disclosure_policy,
@@ -989,7 +1054,7 @@ def _handler_for(adapter: GovernedRestAdapter):
                 return
             try:
                 principal = adapter._authenticate(self.headers)
-            except AuthorizationError:
+            except (AuthorizationError, HostReadError, HostWriteError):
                 self._error("unauthorized")
                 return
             try:
@@ -1004,7 +1069,7 @@ def _handler_for(adapter: GovernedRestAdapter):
                 self._error("bad_request")
             except _UnsupportedTokenBudget:
                 self._error("unsupported_token_budget")
-            except AuthorizationError:
+            except (AuthorizationError, HostReadError, HostWriteError):
                 self._error("forbidden")
             except (ExtractionConflict, GovernanceConflict):
                 self._error("conflict")

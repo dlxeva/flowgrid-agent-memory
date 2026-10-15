@@ -66,7 +66,15 @@ class ConformanceReport:
     def passed(self) -> bool:
         """Whether the security contract passed; quality is never an auth gate."""
 
-        return all(case.status == "pass" for case in self.security_contract)
+        expected_ids = ['core.batch_limit', 'core.candidate_only', 'core.exception_sanitization', 'core.governance_fields', 'core.idempotency_conflict', 'core.idempotent_replay', 'core.input_integrity', 'core.source_span_bounds', 'core.source_span_identity', 'core.source_span_quote', 'extractor.interface', 'extractor.output_contract']
+        cases = self.security_contract
+        return (
+            isinstance(cases, tuple)
+            and len(cases) == len(expected_ids)
+            and all(isinstance(case, ConformanceCase) for case in cases)
+            and {case.id for case in cases} == set(expected_ids)
+            and all(case.status == "pass" for case in cases)
+        )
 
     @property
     def behavioral_quality_passed(self) -> bool | None:

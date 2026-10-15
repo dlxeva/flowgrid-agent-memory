@@ -102,8 +102,24 @@ def _round(value: float, digits: int = 4):
     return round(float(value), digits)
 
 
+def _validate_dataset_references(dataset: Dataset) -> None:
+    """Missing or cross-user labels must not silently leave the score denominator."""
+    owners = {}
+    for session in dataset.sessions:
+        for index in range(len(session["messages"])):
+            key = f"{session['session_id']}#{index}"
+            if key in owners:
+                raise ValueError("evaluation_duplicate_source_key")
+            owners[key] = session["user_id"]
+    for query in dataset.queries:
+        for key in [*query.gold, *query.distractors]:
+            if key not in owners or owners[key] != query.user_id:
+                raise ValueError("evaluation_invalid_source_reference")
+
+
 def build_index(db: RetrieverDB, dataset: Dataset) -> tuple[dict, dict]:
     """按官方 20 条/块的切分策略灌库，返回 (索引统计, gold 键 → 引擎消息 id)。"""
+    _validate_dataset_references(dataset)
     id_map: dict[str, str] = {}
     started = time.perf_counter()
     add_calls = 0
@@ -137,6 +153,7 @@ def build_index(db: RetrieverDB, dataset: Dataset) -> tuple[dict, dict]:
 def run_stage(stage: str, flags: dict, dataset: Dataset, *, workdir: str,
               top_k: int = OFFICIAL_TOP_K) -> StageResult:
     """跑完一个消融档位：重建索引 → 逐条查询 → 汇总指标。"""
+    _validate_dataset_references(dataset)
     if flags.get("vector"):
         available, reason = vector_backend_available()
         if not available:
@@ -316,6 +333,12 @@ def aggregate_across_seeds(per_seed: list[list[StageResult]]) -> list[dict]:
     """
     if not per_seed:
         return []
+    expected = [(result.stage, result.flags) for result in per_seed[0]]
+    if len({name for name, _ in expected}) != len(expected):
+        raise ValueError("evaluation_duplicate_stage")
+    for results in per_seed:
+        if [(result.stage, result.flags) for result in results] != expected:
+            raise ValueError("evaluation_seed_stage_mismatch")
     n_stages = len(per_seed[0])
     out: list[dict] = []
     for i in range(n_stages):

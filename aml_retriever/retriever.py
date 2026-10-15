@@ -183,12 +183,31 @@ def _msg_id(user_id: str, session_id: str | None, seq: int) -> str:
 class RetrieverDB:
     """存储 + 检索引擎。线程安全：每线程独立连接，写操作串行化。"""
 
-    def __init__(self, config: RetrieverConfig | None = None, db_path: str | None = None):
+    def __init__(self, config: RetrieverConfig | None = None, db_path: str | None = None,
+                 *, read_only: bool = False):
+        if type(read_only) is not bool:
+            raise ValueError("read_only must be a boolean")
+        self.read_only = read_only
         self.config = config or RetrieverConfig()
         if db_path is not None:
             self.config.db_path = db_path
         self.db_path = self.config.db_path
         self.flags = dict(self.config.flags)
+
+        if self.read_only:
+            # No schema lock file, writable preflight, initialization or
+            # migration. SQLite mode=ro rejects missing files and persists
+            # even if a trusted caller accidentally unsets query_only.
+            path = Path(self.db_path)
+            if self.db_path == ":memory:" or not path.is_absolute() or not path.is_file():
+                raise ValueError("read-only open requires an existing absolute file path")
+            self._read_only_uri = path.resolve().as_uri() + "?mode=ro"
+            self._write_lock = threading.RLock()
+            self._pool = queue.LifoQueue(maxsize=max(1, self.config.pool_size))
+            self._mem_lock = threading.RLock()
+            self._shared_mem_con = None
+            self._pool.put_nowait(self._new_connection())
+            return
 
         with _SCHEMA_INITIALIZATION_LOCK, _cross_process_schema_initialization_lock(
             self.db_path
@@ -214,6 +233,23 @@ class RetrieverDB:
 
     # ------------------------------------------------------------- connection
     def _new_connection(self) -> sqlite3.Connection:
+        if self.read_only:
+            con = sqlite3.connect(self._read_only_uri, uri=True,
+                timeout=self.config.busy_timeout_ms / 1000.0, check_same_thread=False)
+            con.row_factory = sqlite3.Row
+            try:
+                con.execute("PRAGMA query_only=ON")
+                # The inspector owns snapshot startup. Starting another BEGIN
+                # here breaks the integrated release inspector's transaction.
+                report = schema_migrations._inspect_connection_schema(con)
+                if not report.compatible or report.status != "ready" or report.migration_required:
+                    raise governed.GovernanceError(
+                        "read-only open requires a fully initialized compatible schema: " + report.status)
+                con.rollback()
+                return con
+            except Exception:
+                con.close()
+                raise
         con = sqlite3.connect(self.db_path, timeout=self.config.busy_timeout_ms / 1000.0,
                               check_same_thread=False)
         con.row_factory = sqlite3.Row
@@ -251,6 +287,8 @@ class RetrieverDB:
 
     def _write(self, fn, *args, _immediate: bool = False, **kwargs):
         """串行化写入 + 有限重试（应对 SQLITE_BUSY）。"""
+        if self.read_only:
+            raise PermissionError("memory database is read-only")
         last_error: Exception | None = None
         for attempt in range(max(1, self.config.write_retries)):
             try:
@@ -771,7 +809,9 @@ class RetrieverDB:
         scored = self._score(records, query, tokens, rank_map, relative_window=relative_window)
         ordered = self._fuse_and_order(scored, fts_order)
         if self.flags.get("dedup", True):
-            ordered = self._dedup(ordered)
+            ordered = self._dedup(ordered, source_aware=self.flags.get("source_aware_dedup", False))
+        if self.flags.get("complementary_sources", False):
+            ordered = self._complementary_order(ordered)
         final = self._apply_slot_guarantee(ordered, limit)
 
         results = [
@@ -1187,12 +1227,16 @@ class RetrieverDB:
         return sorted(records, key=lambda x: (-x["score"], len(x["content"] or ""), x["id"]))
 
     @staticmethod
-    def _dedup(ordered: list[dict]) -> list[dict]:
+    def _dedup(ordered: list[dict], *, source_aware: bool = False) -> list[dict]:
         seen_hash: set[str] = set()
         kept: list[dict] = []
         covered: list[set] = []
         for rec in ordered:
             digest = hashlib.sha1((rec["content"] or "").encode("utf-8")).hexdigest()
+            if source_aware:
+                # Equal words from different people/times are not equal evidence.
+                identity = (rec["id"],) if rec["view"] == "message" else tuple(rec["source_ids"])
+                digest = (digest, identity)
             if digest in seen_hash:
                 continue
             sources = set(rec["source_ids"])
@@ -1204,6 +1248,44 @@ class RetrieverDB:
                 covered.append(sources)
             kept.append(rec)
         return kept
+
+    @staticmethod
+    def _complementary_order(ordered: list[dict]) -> list[dict]:
+        """Prefer new exact sources only within the top 10% relevance band.
+
+        No quota for sessions; low-relevance records never enter this band.
+        Original score distribution is reassigned to the new rank so later
+        raw-message slot enforcement cannot silently undo this ordering.
+        """
+        if len(ordered) < 2 or ordered[0]["score"] <= 0:
+            return ordered
+        floor = ordered[0]["score"] * 0.9
+        count = 0
+        for rec in ordered[:200]:
+            if rec["score"] < floor:
+                break
+            count += 1
+        if count < 2:
+            return ordered
+        pool = list(enumerate(ordered[:count]))
+        rank_scores = [r["score"] for r in ordered[:count]]
+        selected = []
+        covered = set()
+        while pool:
+            def merit(entry):
+                position, rec = entry
+                sources = set(rec["source_ids"])
+                overlap = len(sources & covered) / len(sources) if sources else 0.0
+                return rec["score"] * (1.0 - 0.15 * overlap), -position
+            best = max(pool, key=merit)
+            pool.remove(best)
+            selected.append(best[1])
+            covered.update(best[1]["source_ids"])
+        for rank, rec in enumerate(selected):
+            rec["score"] = rank_scores[rank]
+            if "complementary_sources" not in rec["flags"]:
+                rec["flags"].append("complementary_sources")
+        return selected + ordered[count:]
 
     def _apply_slot_guarantee(self, ordered: list[dict], limit: int) -> list[dict]:
         """保证 top_k 中原始消息占比不低于配置比例（聚合视图不得挤掉原始证据）。"""
@@ -1225,6 +1307,72 @@ class RetrieverDB:
         return sorted(merged, key=lambda x: (-x["score"], len(x["content"] or ""), x["id"]))[:limit]
 
     # -------------------------------------------------- 隐私与生命周期（删除）
+    def delete_source(self, user_id: str, source_event_id: str) -> dict:
+        """Erase one exact user-bound raw source and its entire derived chain.
+
+        Ingest receipts/session sequence counters deliberately survive. Existing
+        extraction receipts lack an input manifest, so ALL receipts for this
+        user are invalidated, including unrelated keys. No receipt is removed
+        when the exact source is absent. This is logical SQLite deletion, not
+        secure erasure of disk pages, WALs, backups, or exported artifacts.
+        """
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ValueError("user_id is required")
+        if not isinstance(source_event_id, str) or not source_event_id.strip():
+            raise ValueError("source_event_id is required")
+
+        def _do(con):
+            result = {"user_id": user_id, "source_event_id": source_event_id,
+                "deleted_messages": 0, "deleted_views": 0, "deleted_raw_events": 0,
+                "deleted_memory_records": 0, "deleted_extraction_receipts": 0,
+                "deleted_proposal_origins": 0, "deleted_state_events": 0,
+                "rewritten_related_state_events": 0,
+                "extraction_receipt_scope": "all_user_receipts_invalidated_when_source_exists"}
+            raw = con.execute("SELECT source_message_id FROM raw_events WHERE id=? AND user_id=?",
+                              (source_event_id, user_id)).fetchone()
+            if raw is None:
+                return result
+            message_id = raw["source_message_id"]
+            records = {row["id"] for row in con.execute(
+                "SELECT id,source_event_ids FROM memory_records WHERE user_id=?", (user_id,))
+                if source_event_id in json.loads(row["source_event_ids"])}
+            origins = list(con.execute("SELECT record_id,evidence_spans_json FROM proposal_origins WHERE user_id=?", (user_id,)))
+            for row in origins:
+                spans = json.loads(row["evidence_spans_json"])
+                if any(span.get("source_event_id") == source_event_id for span in spans):
+                    records.add(row["record_id"])
+            # Preserve surviving records' status history. Dropping these events
+            # would reveal an older confirmed state and revive superseded data.
+            events = list(con.execute("SELECT * FROM memory_state_events WHERE user_id=?", (user_id,)))
+            surviving_touched = set()
+            for row in events:
+                if row["record_id"] not in records and row["related_record_id"] in records:
+                    columns = tuple(row.keys())
+                    values = [None if k == "related_record_id" else "source_erased" if k == "reason" else row[k] for k in columns]
+                    con.execute("DELETE FROM memory_state_events WHERE id=? AND user_id=?", (row["id"], user_id))
+                    con.execute(f"INSERT INTO memory_state_events({','.join(columns)}) VALUES({','.join('?' for _ in columns)})", values)
+                    surviving_touched.add(row["record_id"])
+                    result["rewritten_related_state_events"] += 1
+            for record_id in surviving_touched:
+                latest = con.execute("SELECT reason FROM memory_state_events WHERE record_id=? AND user_id=? ORDER BY transitioned_at DESC,id DESC LIMIT 1", (record_id, user_id)).fetchone()
+                con.execute("UPDATE memory_records SET state_reason=? WHERE id=? AND user_id=?", (latest["reason"], record_id, user_id))
+            # Per-record deletes avoid SQLite's variable limit for large chains.
+            for record_id in records:
+                result["deleted_proposal_origins"] += con.execute("DELETE FROM proposal_origins WHERE record_id=? AND user_id=?", (record_id, user_id)).rowcount
+                result["deleted_state_events"] += con.execute("DELETE FROM memory_state_events WHERE record_id=? AND user_id=?", (record_id, user_id)).rowcount
+                result["deleted_memory_records"] += con.execute("DELETE FROM memory_records WHERE id=? AND user_id=?", (record_id, user_id)).rowcount
+            result["deleted_extraction_receipts"] = con.execute("DELETE FROM extraction_receipts WHERE user_id=?", (user_id,)).rowcount
+            for row in list(con.execute("SELECT view_id,source_ids FROM views WHERE user_id=?", (user_id,))):
+                if message_id in json.loads(row["source_ids"]):
+                    con.execute("DELETE FROM fts WHERE doc_id=? AND user_id=?", (row["view_id"], user_id))
+                    result["deleted_views"] += con.execute("DELETE FROM views WHERE view_id=? AND user_id=?", (row["view_id"], user_id)).rowcount
+            con.execute("DELETE FROM fts WHERE doc_id=? AND user_id=?", (message_id, user_id))
+            result["deleted_messages"] = con.execute("DELETE FROM messages WHERE id=? AND user_id=?", (message_id, user_id)).rowcount
+            result["deleted_raw_events"] = con.execute("DELETE FROM raw_events WHERE id=? AND user_id=?", (source_event_id, user_id)).rowcount
+            return result
+
+        return self._write(_do, _immediate=True)
+
     def delete_user(self, user_id: str) -> dict:
         def _do(con):
             n_msg = con.execute(

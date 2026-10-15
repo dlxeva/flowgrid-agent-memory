@@ -36,6 +36,9 @@ ROOT_FILES = frozenset((
     "config.product.example.json", ".env.example",
 ))
 REVIEWED_DOCS = frozenset((
+    "HOST_LIFECYCLE_WRITES.md",
+    "HOST_LIFECYCLE_READS.md",
+    "SDK_EXTENSIONS.md",
     "ACCEPTANCE_CRITERIA.md", "ACCEPTANCE_V0_1.md", "AML_DEPLOYMENT.md",
     "AML_SUBMISSION.md", "API_CONTRACT.md", "CONTAINER.md",
     "CONTEXT_COMPLETENESS.md", "CONTEXT_LIMITS.md", "DATA_LIFECYCLE.md",

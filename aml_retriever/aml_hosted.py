@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hmac
+import hashlib
 import importlib.metadata
 import json
 import math
@@ -69,6 +70,7 @@ class HostedConfig:
     request_timeout_seconds: float = 60.0
     operation_timeout_seconds: float = 45.0
     require_build_identity: bool = False
+    retrieval_json: str = field(default="{}", repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -103,6 +105,7 @@ class HostedConfig:
             raise _invalid_configuration()
         if not isinstance(self.require_build_identity, bool):
             raise _invalid_configuration()
+        hosted_retrieval_config(self)
 
     @classmethod
     def from_env(cls) -> "HostedConfig":
@@ -140,9 +143,71 @@ class HostedConfig:
                 request_timeout_seconds=float(os.environ.get("AML_HOSTED_REQUEST_TIMEOUT_SECONDS", "60")),
                 operation_timeout_seconds=float(os.environ.get("AML_HOSTED_OPERATION_TIMEOUT_SECONDS", "45")),
                 require_build_identity=require == "1",
+                retrieval_json=os.environ.get("AML_HOSTED_RETRIEVAL_JSON", "{}"),
             )
         except (OSError, UnicodeError, ValueError, TypeError):
             raise _invalid_configuration() from None
+
+
+# Explicit numeric bounds limit retrieval cost; transport/auth fields are absent.
+_RETRIEVAL_INTS = {
+    "max_candidates": (1, 2000), "max_query_tokens": (1, 256),
+    "window_size": (1, 32), "window_overlap": (0, 31),
+    "segment_max_messages": (1, 128), "segment_max_gap_seconds": (1, 86400),
+    "rrf_k": (1, 1000), "supersession_max_pairs": (1, 128),
+}
+_RETRIEVAL_FLOATS = {
+    "message_slot_ratio": (0, 1), "rrf_weight_feature": (0, 100),
+    "rrf_weight_lexical": (0, 100), "recency_weight": (0, 100),
+    "recency_weight_intent": (0, 100), "preference_role_weight": (0, 100),
+    "relative_time_weight": (0, 100), "supersession_weight": (0, 100),
+    "supersession_penalty": (0, 100), "supersession_min_overlap": (0, 1),
+}
+
+
+def hosted_retrieval_config(hosted: "HostedConfig") -> RetrieverConfig:
+    """Trusted deployment JSON only; no request/env legacy fallback or secrets."""
+    try:
+        raw = hosted.retrieval_json
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > 8192:
+            raise ValueError
+        data = json.loads(raw, object_pairs_hook=_unique_object,
+                          parse_constant=_reject_constant)
+        if not isinstance(data, dict) or not set(data) <= (set(_RETRIEVAL_INTS) | set(_RETRIEVAL_FLOATS) | {"flags"}):
+            raise ValueError
+        cfg = RetrieverConfig(db_path=hosted.db_path, host=hosted.host, port=hosted.port)
+        for name, value in data.items():
+            if name == "flags":
+                if not isinstance(value, dict) or not set(value) <= set(cfg.flags):
+                    raise ValueError
+                if any(type(v) is not bool for v in value.values()):
+                    raise ValueError
+                # Vector dependencies are not part of this lexical candidate.
+                if value.get("vector", False):
+                    raise ValueError
+                cfg.flags.update(value)
+                continue
+            bounds = _RETRIEVAL_INTS.get(name) or _RETRIEVAL_FLOATS[name]
+            if name in _RETRIEVAL_INTS:
+                if type(value) is not int:
+                    raise ValueError
+            elif type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError
+            if not bounds[0] <= value <= bounds[1]:
+                raise ValueError
+            setattr(cfg, name, value)
+        if cfg.window_overlap >= cfg.window_size:
+            raise ValueError
+        return cfg
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise _invalid_configuration() from None
+
+
+def retrieval_config_digest(cfg: RetrieverConfig) -> str:
+    profile = {n: getattr(cfg, n) for n in sorted(set(_RETRIEVAL_INTS) | set(_RETRIEVAL_FLOATS))}
+    profile["flags"] = dict(cfg.flags)
+    return hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":"),
+                                    allow_nan=False).encode()).hexdigest()
 
 
 def runtime_identity() -> dict:
@@ -394,11 +459,16 @@ class HostedAMLServer(ThreadingHTTPServer):
             self.identity["identity_source"] != "build_manifest" or self.identity["source_state"] != "committed"
         ):
             raise _invalid_configuration()
+        retrieval = hosted_retrieval_config(config)
+        if service is not None and config.retrieval_json != "{}":
+            raise _invalid_configuration()
+        self.identity["retrieval_config_digest_sha256"] = retrieval_config_digest(
+            service.config if service is not None else retrieval)
         self.quiet = quiet
         self.operations = threading.BoundedSemaphore(config.max_inflight)
         self.connections = threading.BoundedSemaphore(config.max_connections)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=config.max_inflight, thread_name_prefix="aml-operation")
-        self.service = service or MemoryService(RetrieverConfig(db_path=config.db_path, host=config.host, port=config.port))
+        self.service = service or MemoryService(retrieval)
         try:
             super().__init__((config.host, config.port), _HostedHandler)
         except Exception:

@@ -318,6 +318,9 @@ class MemoryService:
         The official AML Add/Search paths never call this method implicitly.
         """
 
+        if self.db.read_only:
+            raise PermissionError("memory database is read-only")
+
         active_extractor = extractor if extractor is not None else DirectiveMemoryExtractor()
         invocation_failure: ExtractorInvocationError | None = None
         identity_failure = False
@@ -508,6 +511,13 @@ class MemoryService:
             raise ApiError(422, "'user_id' is required")
         return self.db.delete_user(user_id)
 
+    def delete_source(self, user_id: str, source_event_id: str) -> dict:
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ApiError(422, "'user_id' is required")
+        if not isinstance(source_event_id, str) or not source_event_id.strip():
+            raise ApiError(422, "'source_event_id' is required")
+        return self.db.delete_source(user_id, source_event_id)
+
     def health(self) -> dict:
         # 健康检查不返回任何记忆内容
         return {"status": "ok", "service": "aml-retriever"}
@@ -559,10 +569,42 @@ class MemoryService:
             raise ApiError(422, str(exc)) from exc
         return {"data": [self._evidence_to_official(e) for e in result.results]}
 
+    def _official_source_content(self, evidence: Evidence) -> str:
+        """Read exact original sources in declared order, never infer a subject.
+
+        Metadata is descriptive data, not a command to the platform reader.
+        Ingestion time cannot stand in for an absent source timestamp.
+        """
+        import json
+        ids = evidence.source_message_ids
+        if not ids or len(ids) != len(set(ids)):
+            raise ApiError(409, "source unavailable")
+        placeholders = ",".join("?" for _ in ids)
+        with self.db.connection() as con:
+            rows = con.execute(
+                "SELECT id,role,content,ts_ms,created_at FROM messages "
+                "WHERE user_id=? AND id IN (" + placeholders + ")",
+                (evidence.user_id, *ids),
+            ).fetchall()
+        sources = {row["id"]: row for row in rows}
+        if len(sources) != len(ids):
+            raise ApiError(409, "source unavailable")
+        parts = []
+        for source_id in ids:
+            row = sources[source_id]
+            stamp = row["created_at"] if row["ts_ms"] is not None else "unknown"
+            label = ("[role=" + json.dumps(row["role"], ensure_ascii=False)
+                     + "; time=" + json.dumps(stamp)
+                     + "; source=" + json.dumps(source_id) + "]")
+            parts.append(label + "\n" + row["content"])
+        return "\n".join(parts)
+
     def _evidence_to_official(self, evidence: Evidence) -> dict:
         item = {
             "id": evidence.id,
-            "content": evidence.content,
+            "content": (self._official_source_content(evidence)
+                        if self.config.flags.get("official_source_labels", False)
+                        else evidence.content),
             "score": float(evidence.score),
         }
         if evidence.created_at:

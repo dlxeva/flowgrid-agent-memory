@@ -343,7 +343,10 @@ def _report(
 def _parse_version(value: object) -> int:
     if not isinstance(value, str) or _VERSION_RE.fullmatch(value) is None:
         raise GovernanceError("governance schema version is invalid")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        raise GovernanceError("governance schema version is invalid") from None
 
 
 def _table_layout(con: sqlite3.Connection, table: str) -> tuple:
@@ -656,6 +659,18 @@ def inspect_schema(db_path: str) -> SchemaReport:
             reason="database could not be opened read-only",
         )
     try:
+        return _inspect_connection_schema(con)
+    finally:
+        con.close()
+
+
+def _inspect_connection_schema(con: sqlite3.Connection) -> SchemaReport:
+    """Inspect the caller's exact connection; ownership remains with caller.
+
+    A read-only opener uses this to avoid inspecting one pathname and then
+    trusting a different file opened after that inspection.
+    """
+    try:
         con.execute("PRAGMA query_only=ON")
         # Keep inventory, layouts, and metadata in one read snapshot even if
         # another process atomically initializes or migrates the database.
@@ -887,8 +902,6 @@ def inspect_schema(db_path: str) -> SchemaReport:
             current_version=None,
             reason="governance schema could not be inspected",
         )
-    finally:
-        con.close()
 
 
 def assert_writable_open_compatible(db_path: str) -> SchemaReport:

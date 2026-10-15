@@ -1037,7 +1037,7 @@ def transition_target_matches(
         record_ids.append(normalized_related)
 
     placeholders = ",".join("?" for _ in record_ids)
-    cutoff = utc_now()
+    cutoff = _current_state_instant(con, user_id=normalized_user)
     rows = con.execute(
         f"SELECT mr.id,mr.user_id,mr.memory_key,mr.memory_type,mr.subject,mr.scope_json "
         f"FROM memory_records mr WHERE mr.user_id=? "

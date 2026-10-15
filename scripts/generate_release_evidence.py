@@ -43,6 +43,79 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+import tarfile
+import zipfile
+
+def decode(data):
+    if len(data) > 2 * 1024 * 1024:
+        raise ValueError('metadata_too_large')
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate_metadata_key')
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=pairs)
+
+def validate_claims(report, identities, artifacts, *, version, commit):
+    if not re.fullmatch('[0-9a-f]{40}', commit):
+        raise ValueError('invalid_commit')
+    if not re.fullmatch('[0-9]+\\.[0-9]+\\.[0-9]+', version):
+        raise ValueError('invalid_version')
+    if report.get('schema') != 'flowgrid.agent-memory.release-verification/v1' or report.get('status') != 'passed':
+        raise ValueError('verification_not_passed')
+    identity = report.get('source_identity')
+    if not isinstance(identity, dict) or identity.get('source_state') != 'committed':
+        raise ValueError('committed_identity_required')
+    if identity.get('source_commit') != commit or identity.get('product_version') != version:
+        raise ValueError('identity_label_mismatch')
+    if len(identities) != 2 or any((item != identity for item in identities)):
+        raise ValueError('archive_identity_mismatch')
+    rows = report.get('artifacts')
+    if not isinstance(rows, list) or len(rows) != 2 or any((not isinstance(row, dict) for row in rows)):
+        raise ValueError('artifact_manifest_invalid')
+    if len({row.get('name') for row in rows}) != 2:
+        raise ValueError('artifact_manifest_invalid')
+    expected = {row['name']: (row.get('sha256'), row.get('size_bytes')) for row in rows}
+    if artifacts != expected:
+        raise ValueError('artifact_hash_mismatch')
+    return {'binding': 'matched', 'signed_attestation_verified': False, 'test_execution_verified': False}
+
+def validate_directory(directory, *, version, commit):
+    directory = Path(directory)
+    if not re.fullmatch('[0-9]+\\.[0-9]+\\.[0-9]+', version):
+        raise ValueError('invalid_version')
+    names = [f'flowgrid_agent_memory-{version}-py3-none-any.whl', f'flowgrid_agent_memory-{version}.tar.gz']
+    archive_names = {p.name for p in directory.iterdir()
+                     if p.suffix == '.whl' or p.name.endswith('.tar.gz')}
+    if archive_names != set(names):
+        raise ValueError('artifact_set_mismatch')
+    artifacts, identities = ({}, [])
+    for name in names:
+        path = directory / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 32 * 1024 * 1024:
+            raise ValueError('unexpected_artifact')
+        data = path.read_bytes()
+        artifacts[name] = (hashlib.sha256(data).hexdigest(), len(data))
+        if name.endswith('.whl'):
+            with zipfile.ZipFile(path) as archive:
+                matches = [i for i in archive.infolist() if i.filename == 'aml_retriever/release_identity.json']
+                if len(matches) != 1 or matches[0].file_size > 2 * 1024 * 1024:
+                    raise ValueError('archive_identity_invalid')
+                identities.append(decode(archive.read(matches[0])))
+        else:
+            with tarfile.open(path) as archive:
+                matches = [i for i in archive.getmembers() if i.name == f'flowgrid_agent_memory-{version}/aml_retriever/release_identity.json']
+                if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 2 * 1024 * 1024:
+                    raise ValueError('archive_identity_invalid')
+                identities.append(decode(archive.extractfile(matches[0]).read()))
+    path = directory / 'release-verification.json'
+    if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError('verification_report_invalid')
+    return validate_claims(decode(path.read_bytes()), identities, artifacts, version=version, commit=commit)
+
 def main() -> int:
     args = parse_args()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?", args.version):
@@ -61,6 +134,10 @@ def main() -> int:
     )
     if len(artifacts) < 2:
         raise SystemExit("wheel and sdist are required")
+    try:
+        binding = validate_directory(args.dist, version=args.version, commit=args.commit)
+    except (ValueError, OSError, zipfile.BadZipFile, tarfile.TarError):
+        raise SystemExit("release_artifact_binding_failed")
     args.output.mkdir(parents=True, exist_ok=True)
     subjects = [
         {
@@ -98,6 +175,8 @@ def main() -> int:
         },
         "artifacts": subjects,
     }
+    acceptance["artifact_binding"] = binding
+    acceptance["gate_claim_origin"] = "caller_asserted; CI execution evidence required separately"
     write_json(args.output / "acceptance.json", acceptance)
 
     provenance = {

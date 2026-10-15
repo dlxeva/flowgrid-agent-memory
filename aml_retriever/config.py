@@ -12,6 +12,9 @@ from dataclasses import dataclass, field, asdict
 # 检索增强开关。每一项都可独立关闭，用于消融实验。
 # 默认值只反映"当前有离线证据支持"的配置，无证据的一律默认关闭。
 DEFAULT_FLAGS: dict[str, bool] = {
+    "complementary_sources": False,  # fixed S2 retrieval candidate
+    "official_source_labels": False,  # S1 independent candidate, not QA-proven
+    "source_aware_dedup": False,  # preserve distinct source occurrences
     "views": True,       # 聚合视图（window / session-segment）参与检索
     "exact": True,       # 精确子串 / token 覆盖率加权
     "datenum": True,     # 数字与日期精确匹配加权
@@ -122,6 +125,19 @@ class RetrieverConfig:
 
     flags: dict = field(default_factory=lambda: dict(DEFAULT_FLAGS))
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.flags, dict):
+            raise ValueError("flags_mapping_required")
+        for value in self.flags.values():
+            self._flag_bool(value)
+        self.flags = dict(self.flags)
+
+    @staticmethod
+    def _flag_bool(value: object) -> bool:
+        if type(value) is not bool:
+            raise ValueError("flag_boolean_required")
+        return value
+
     # ------------------------------------------------------------------ 构造
     @classmethod
     def from_env(cls, path: str | None = None) -> "RetrieverConfig":
@@ -173,10 +189,12 @@ class RetrieverConfig:
         out = RetrieverConfig(**{**asdict(self)})
         out.flags = dict(self.flags)
         for key, value in (data or {}).items():
-            if key == "flags" and isinstance(value, dict):
+            if key == "flags":
+                if not isinstance(value, dict):
+                    raise ValueError("flags_mapping_required")
                 for flag_name, flag_value in value.items():
                     if flag_name in out.flags:
-                        out.flags[flag_name] = bool(flag_value)
+                        out.flags[flag_name] = self._flag_bool(flag_value)
             elif hasattr(out, key):
                 setattr(out, key, value)
         return out
@@ -186,7 +204,7 @@ class RetrieverConfig:
         out = RetrieverConfig(**{**asdict(self)})
         out.flags = dict(self.flags)
         for name, value in overrides.items():
-            out.flags[name] = bool(value)
+            out.flags[name] = self._flag_bool(value)
         return out
 
     def to_dict(self) -> dict:

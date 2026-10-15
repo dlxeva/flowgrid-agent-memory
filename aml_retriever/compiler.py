@@ -291,6 +291,13 @@ def find_receipt(
         (user_id, idempotency_key),
     ).fetchone()
     if row is None:
+        # Source erasure invalidates all user receipts conservatively. Surviving
+        # origins still bind their old key; it must never become a fresh INSERT.
+        if con.execute(
+            "SELECT 1 FROM proposal_origins WHERE user_id=? AND idempotency_key=? LIMIT 1",
+            (user_id, idempotency_key),
+        ).fetchone() is not None:
+            raise ExtractionConflict("extraction receipt invalidated; surviving origins still bind this idempotency key")
         return None
     receipt = receipt_from_row(row)
     if receipt.record_ids:

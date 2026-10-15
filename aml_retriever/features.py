@@ -132,6 +132,13 @@ def _cn_integer(raw: str) -> int | None:
     if raw.isdigit():
         value = int(raw)
         return value if 1 <= value <= _MAX_RELATIVE_UNITS else None
+    # Validate the supported positional grammar before arithmetic. An
+    # invalid tail must not silently become zero or a smaller count.
+    digit = r"[一二三四五六七八九两]"
+    tens = rf"{digit}?十{digit}?"
+    hundreds = rf"{digit}?百(?:{tens}|{digit})?"
+    if re.fullmatch(rf"(?:{digit}|{tens}|{hundreds})", raw) is None:
+        return None
     digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
               "六": 6, "七": 7, "八": 8, "九": 9}
     if raw == "十":

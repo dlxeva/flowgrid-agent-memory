@@ -27,6 +27,18 @@ contains only an environment-variable name, never a token.
 
 ## Trusted identity
 
+The CLI uses the static principal described below; it does not provide a live
+identity issuer or revocation service. Trusted Python hosts may opt into a
+reader factory or matching reader/writer factories. Reader-only mode refuses
+all mutation routes. Paired mode permits only raw events and candidate
+extractions, and refuses transition and erase routes even with static grants.
+The permission table below describes default mode, not permission to bypass
+these opt-in restrictions. Factories cannot be supplied through request or
+configuration JSON. See [HOST_LIFECYCLE_READS.md](HOST_LIFECYCLE_READS.md) and
+[HOST_LIFECYCLE_WRITES.md](HOST_LIFECYCLE_WRITES.md).
+
+中文说明：默认命令使用静态身份配置；实时撤权需要可信宿主接入。只读门拒绝所有写入，双工厂仅允许原文和候选写入，权限表不覆盖这些额外限制。普通 REST 仍只允许本机回环访问。
+
 The adapter constructs one immutable `TrustedPrincipal` from configuration.
 Request JSON cannot set or replace its `principal_id`, `authority`, users,
 scopes, permissions, purpose, or audit-purpose allowlist. Unknown request
@@ -46,11 +58,9 @@ Permissions are independent:
 Every operation validates the concrete user and requested scope before calling
 the facade. Audit rejects wildcard user grants. A REST transition additionally
 requires `memory:read` + `memory:audit`, a permitted trusted audit purpose, and
-an exact `memory_key`: the adapter performs an audit-authorized direct
-primary-key metadata lookup and proves the target's immutable scope before
-mutation. The lookup has no `max_records` window and loads no memory content,
-raw evidence, or state-event body. This avoids trusting a request-declared scope
-for an opaque record ID. Transition and erase
+an exact `memory_key`: the adapter resolves the target through the authorized
+audit facade and proves its immutable record scope before mutation. This avoids
+trusting a request-declared scope for an opaque record ID. Transition and erase
 also require a principal authority of `user`, `owner`, or `policy`; granting the
 permission to an agent/system/external/unknown principal still returns a fixed
 denial.
@@ -81,10 +91,9 @@ All other routes are strict `POST application/json`:
   audit is never injectable even when its pack status is ready.
 - `/v1/memories/transition`: requires `user_id`, `record_id`, `memory_key`,
   `target_status`, `reason`, and optional exact `scope`/`related_record_id`.
-  Actor and authority always come from the principal. A related record is
-  resolved by the same direct metadata lookup and must share the target's exact
-  user, key, type, subject, and scope. The success receipt contains only
-  `record_id` and
+  Actor and authority always come from the principal. A related record must
+  resolve through the same authorized audit view and share the target's exact
+  scope and slot identity. The success receipt contains only `record_id` and
   `current_status`; it does not disclose internal provenance, actors, reasons,
   confirmation metadata, or relation IDs.
 - `/v1/admin/erase-user`: user-wide privacy erasure. It requires both the

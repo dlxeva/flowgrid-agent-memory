@@ -1,9 +1,13 @@
 """Generated release evidence is complete and commit-bound."""
 import json
+import hashlib
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+import tarfile
+import zipfile
 from pathlib import Path
 
 
@@ -14,8 +18,34 @@ class TestReleaseEvidence(unittest.TestCase):
             dist = root / "dist"
             output = root / "out"
             dist.mkdir()
-            (dist / "flowgrid_agent_memory-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
-            (dist / "flowgrid_agent_memory-0.1.0.tar.gz").write_bytes(b"sdist")
+            # The generator now validates archive identity and verification
+            # hashes. Use actual archives instead of the obsolete byte stubs.
+            identity = {
+                "source_state": "committed", "source_commit": "a" * 40,
+                "product_version": "0.1.0",
+            }
+            payload = json.dumps(identity).encode()
+            wheel = dist / "flowgrid_agent_memory-0.1.0-py3-none-any.whl"
+            sdist = dist / "flowgrid_agent_memory-0.1.0.tar.gz"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("aml_retriever/release_identity.json", payload)
+            with tarfile.open(sdist, "w:gz") as archive:
+                member = tarfile.TarInfo(
+                    "flowgrid_agent_memory-0.1.0/aml_retriever/release_identity.json"
+                )
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+            report = {
+                "schema": "flowgrid.agent-memory.release-verification/v1",
+                "status": "passed", "source_identity": identity,
+                "artifacts": [
+                    {"name": path.name,
+                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                     "size_bytes": path.stat().st_size}
+                    for path in (wheel, sdist)
+                ],
+            }
+            (dist / "release-verification.json").write_text(json.dumps(report))
             subprocess.run(
                 [
                     sys.executable,

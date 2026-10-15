@@ -32,6 +32,13 @@ public distribution.
 
 ## Product status
 
+This working checkout and the locally validated source-evidence candidate are
+not the same artifact. The candidate is uncommitted and has no new official
+AML score, published release or verified signed attestation. Local build,
+container and SBOM checks do not establish production readiness or real-task
+benefit. See [candidate release notes](docs/RELEASE_NOTES.md).
+
+
 - Product version: `0.1.1`
 - AML Add/Search adapter version: `1.1.0`
 - Base runtime: Python 3.11+, standard library only, SQLite with FTS5
@@ -189,7 +196,7 @@ The optional MCP adapter exposes exactly four non-administrative tools over
 stdio. It has no transition, audit, raw-evidence, erase, or administrator tool:
 
 ```bash
-python3 -m pip install 'flowgrid-agent-memory[mcp]'
+python3 -m pip install '.[mcp]'
 flowgrid-memory-mcp \
   --db /absolute/path/to/memory.db \
   --principal-config /absolute/path/to/mcp-principal.json
@@ -230,10 +237,11 @@ data in a persistent database.
 
 ## Release evidence
 
-The release workflow rebuilds and tests the package, performs a fresh-wheel
-install, publishes checksums, acceptance JSON, SPDX SBOM, and provenance JSON,
-and creates GitHub Sigstore attestations for the wheel and sdist. Stable
-criteria are documented in [Acceptance criteria](docs/ACCEPTANCE_CRITERIA.md).
+A public release must rebuild and test the package, install it fresh, and verify checksums, acceptance evidence, SBOM and signed provenance. The current uncommitted candidate has no verified GitHub Sigstore attestation. Self-generated JSON does not prove CI execution or signatures.
+
+Install the MCP extra above from a reviewed local checkout; dependencies may be downloaded. For an offline candidate use exact reviewed wheel files with indexes disabled.
+
+See [candidate release notes](docs/RELEASE_NOTES.md).
 
 ## Contributing and security
 

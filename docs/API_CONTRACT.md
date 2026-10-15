@@ -24,6 +24,11 @@ current official documentation before running a new evaluation.
 ## 2. 鉴权与健康检查
 
 - 支持 `Token`、`Bearer`、`X-Api-Key`；`none` 仅用于公开 smoke。
+
+实现边界：上面的无鉴权选项描述通用/legacy smoke，不是专用宿主服务的开关。
+`flowgrid-memory-aml` 始终要求独立凭据，拒绝 `none`；Health 仍为公开 GET。
+不得用 legacy 服务替代公网宿主服务，也不能把评测凭据当产品多租户认证。
+
 - Health：**无需鉴权的 GET**，返回任意 2xx 即视为正常。
 - 未单独配置 Health 地址时，正式任务检查与 Add **同源的 `/health`**。
 

@@ -13,7 +13,7 @@ from threading import Lock, RLock
 from typing import Callable
 
 from .api import ApiError
-from .context import MAX_CONTEXT_RECORDS
+from . import context as _context_contract
 from .auth import (
     OPERATION_COMPILE_CURRENT,
     OPERATION_EXTRACT,
@@ -26,6 +26,8 @@ from .auth import (
 from .extraction import DirectiveMemoryExtractor, ExtractionError
 from .facade import FlowGridMemory
 from .governance import GovernanceError
+from .host_lifecycle_reads import LifecycleMemoryReader, HostReadError, DeferredReadMemory as _DeferredReadMemory
+from .host_lifecycle_writes import LifecycleCandidateWriter, HostWriteError, DeferredCandidateMemory
 
 
 TOOL_NAMES = (
@@ -37,7 +39,7 @@ TOOL_NAMES = (
 
 DEFAULT_MAX_CHARS = 32_768
 MAX_MAX_CHARS = 1_000_000
-MAX_RECORDS = MAX_CONTEXT_RECORDS
+MAX_RECORDS = getattr(_context_contract, 'MAX_CONTEXT_RECORDS', 1_000)
 MAX_MESSAGES = 1_000
 
 _DB_LOCKS_GUARD = Lock()
@@ -129,7 +131,8 @@ class GovernedMCPTools:
     managers; calls after close return a fixed envelope.
     """
 
-    def __init__(self, *, db_path: str, principal: TrustedPrincipal):
+    def __init__(self, *, db_path: str, principal: TrustedPrincipal,
+                 lifecycle_reader_factory=None, lifecycle_writer_factory=None):
         if (
             not isinstance(db_path, str)
             or not db_path.strip()
@@ -138,6 +141,16 @@ class GovernedMCPTools:
             raise ValueError("db_path must be explicit")
         if not isinstance(principal, TrustedPrincipal):
             raise TypeError("principal must be TrustedPrincipal")
+        if lifecycle_reader_factory is not None and (not callable(lifecycle_reader_factory) or db_path == ':memory:'):
+            raise ValueError('lifecycle reader requires trusted factory and existing file')
+        if lifecycle_writer_factory is not None and (not callable(lifecycle_writer_factory) or lifecycle_reader_factory is None):
+            raise ValueError('candidate writer requires trusted reader and writer factories')
+        self._reader_factory = lifecycle_reader_factory
+        self._writer_factory = lifecycle_writer_factory
+        self._writer = None
+        self._reader = None
+        self._read_memory = (DeferredCandidateMemory(self._active) if lifecycle_writer_factory is not None
+            else _DeferredReadMemory(self._active))
         self._db_path = db_path
         self._principal = principal
         self._memory: FlowGridMemory | None = None
@@ -154,8 +167,37 @@ class GovernedMCPTools:
             # initialization transaction.
             with self._open_lock:
                 if self._memory is None:
-                    self._memory = FlowGridMemory(db_path=self._db_path)
+                    if self._writer_factory is not None:
+                        # Refuse missing/uninitialized/migration-requiring inputs
+                        # before a normal writable open. Path stability and all
+                        # schema/file writers remain a trusted host responsibility.
+                        with FlowGridMemory.open_read_only(db_path=self._db_path):
+                            pass
+                        self._memory = FlowGridMemory(db_path=self._db_path)
+                    else:
+                        self._memory = (FlowGridMemory.open_read_only(db_path=self._db_path)
+                            if self._reader_factory is not None else FlowGridMemory(db_path=self._db_path))
         return self._memory
+
+    def _guarded_reader(self):
+        if self._reader is None:
+            reader = self._reader_factory(self._read_memory)
+            if not isinstance(reader, LifecycleMemoryReader) or reader.memory is not self._read_memory:
+                raise HostReadError('host_reader_binding_required')
+            self._reader = reader
+        return self._reader
+
+    def _guarded_writer(self):
+        reader = self._guarded_reader()
+        if self._writer is None:
+            writer = self._writer_factory(self._read_memory)
+            names = ('refresh_principal','serialize_user','is_user_active','is_source_active')
+            if (not isinstance(writer,LifecycleCandidateWriter) or writer.memory is not self._read_memory
+                    or reader.enabled is not True or writer.enabled is not True
+                    or any(getattr(writer,name)!=getattr(reader,name) for name in names)):
+                raise HostWriteError('host_writer_binding_required')
+            self._writer = writer
+        return self._writer
 
     def _authorized(
         self,
@@ -166,6 +208,10 @@ class GovernedMCPTools:
     ):
         if self._closed:
             raise RuntimeError("tool core is closed")
+        # This opt-in transport mode is read-only until a separate authenticated
+        # live writer gate is implemented. Request bodies cannot enable it.
+        if self._reader_factory is not None and self._writer_factory is None and operation in {OPERATION_INGEST, OPERATION_EXTRACT}:
+            raise AuthorizationError()
         return authorize_operation(
             self._principal,
             user_id=user_id,
@@ -177,7 +223,7 @@ class GovernedMCPTools:
     def _call(operation: Callable[[], dict[str, object]]) -> dict[str, object]:
         try:
             return operation()
-        except AuthorizationError:
+        except (AuthorizationError, HostReadError, HostWriteError):
             return _error("access_denied")
         except (ApiError, ExtractionError, GovernanceError, TypeError, ValueError):
             return _error("invalid_request")
@@ -207,13 +253,17 @@ class GovernedMCPTools:
             safe_user_id = _safe_string(user_id, maximum=256)
             safe_session_id = _safe_string(session_id, nullable=True, maximum=256)
             safe_messages = _safe_messages(messages)
-            receipt = self._active().ingest_raw_events(
+            options = dict(
                 request_id=safe_request_id,
                 user_id=safe_user_id,
                 session_id=safe_session_id,
                 messages=safe_messages,
-                trusted_scope=access.effective_scope,
             )
+            if self._writer_factory is not None:
+                receipt = self._guarded_writer().ingest_raw_events(principal=self._principal,
+                    requested_scope=access.effective_scope, **options)
+            else:
+                receipt = self._active().ingest_raw_events(trusted_scope=access.effective_scope, **options)
             return {
                 "status": "success",
                 "idempotent": receipt.idempotent,
@@ -248,13 +298,17 @@ class GovernedMCPTools:
             ]
             if not safe_event_ids or len(safe_event_ids) > MAX_MESSAGES:
                 raise ValueError("invalid raw event ids")
-            receipt = self._active().extract_candidates(
+            options = dict(
                 user_id=safe_user_id,
                 raw_event_ids=safe_event_ids,
                 idempotency_key=safe_key,
-                trusted_scope=access.effective_scope,
                 extractor=DirectiveMemoryExtractor(),
             )
+            if self._writer_factory is not None:
+                receipt = self._guarded_writer().extract_candidates(principal=self._principal,
+                    requested_scope=access.effective_scope, **options)
+            else:
+                receipt = self._active().extract_candidates(trusted_scope=access.effective_scope, **options)
             return {
                 "status": receipt.status,
                 "idempotent": receipt.idempotent,
@@ -281,9 +335,8 @@ class GovernedMCPTools:
         safe_query = _optional_query_string(query, maximum=10_000)
         safe_records = _safe_limit(max_records, minimum=1, maximum=MAX_RECORDS)
         safe_chars = _safe_limit(max_chars, minimum=0, maximum=MAX_MAX_CHARS)
-        pack = self._active().compile_context(
+        options = dict(
             user_id=safe_user_id,
-            access_context=access.access_context,
             memory_key=safe_key,
             query=safe_query,
             mode="current",
@@ -294,8 +347,12 @@ class GovernedMCPTools:
             as_of=None,
             max_records=safe_records,
             max_chars=safe_chars,
-            disclosure_policy=access.disclosure_policy,
         )
+        if self._reader_factory is not None:
+            pack = self._guarded_reader().compile_context(principal=self._principal, **options)
+        else:
+            pack = self._active().compile_context(access_context=access.access_context,
+                disclosure_policy=access.disclosure_policy, **options)
         # ContextPack is the stable static public-field allowlist.  Never
         # serialize CurrentStateResult or other internal lifecycle objects.
         return pack.to_dict()
@@ -357,6 +414,8 @@ class GovernedMCPTools:
 
     def close(self) -> None:
         memory, self._memory = self._memory, None
+        self._reader = None
+        self._writer = None
         self._closed = True
         if memory is not None:
             memory.close()

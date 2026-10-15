@@ -1,5 +1,8 @@
 # Explicit public sdist allowlist. Build-time generated identity is public metadata.
 global-exclude *
+include aml_retriever/host_lifecycle_writes.py docs/HOST_LIFECYCLE_WRITES.md
+include aml_retriever/host_lifecycle_reads.py docs/HOST_LIFECYCLE_READS.md
+include docs/SDK_EXTENSIONS.md
 include .gitattributes pyproject.toml MANIFEST.in LICENSE NOTICE README.md README.zh-CN.md
 include docs/INSTALL.md docs/LOCAL_SECURITY.md docs/DATA_LIFECYCLE.md
 include docs/REST_V1.md docs/MCP.md docs/EVAL.md docs/API_CONTRACT.md
@@ -32,3 +35,41 @@ include aml_retriever/evaluation/fixtures/governance_v1.json
 include aml_retriever/evaluation/baselines/legacy_v11_small.json
 include flowgrid_memory/__init__.py flowgrid_memory/cli.py flowgrid_memory/conformance.py
 include flowgrid_memory/mcp.py flowgrid_memory/rest.py flowgrid_memory/py.typed
+
+include aml_retriever/completion_adapter.py
+include aml_retriever/date_expression.py
+include aml_retriever/date_meaning_adapter.py
+include aml_retriever/durable_extraction.py
+include aml_retriever/extraction_constraints.py
+include aml_retriever/host_review_events.py
+include aml_retriever/lexical_commitment_adapter.py
+include aml_retriever/numeric_composition.py
+include aml_retriever/numeric_evidence_adapter.py
+include aml_retriever/numeric_selection.py
+include aml_retriever/reference_evidence_adapter.py
+include aml_retriever/sentence_scope_adapter.py
+include aml_retriever/source_calendar.py
+include aml_retriever/temporal_comparison.py
+include aml_retriever/user_evidence_adapter.py
+include aml_retriever/user_evidence_policy.py
+include aml_retriever/validity_host.py
+include aml_retriever/validity_local_demo.py
+include aml_retriever/validity_local_lock.py
+include aml_retriever/validity_retention.py
+include aml_retriever/validity_review.py
+
+include tests/test_transition_metadata_clock_fixed.py tests/test_aml_installer_preflight.py
+
+include tests/test_conformance_completeness_fixed.py
+
+include tests/test_runtime_inventory_fixed.py tests/test_evaluation_input_fixed.py tests/test_relative_count_fixed.py tests/test_governance_provenance_fixed.py tests/test_hosted_late_add.py
+
+include tests/test_config_flag_types_fixed.py tests/test_readonly_extraction_fixed.py
+
+include tests/test_release_subject_set_fixed.py tests/test_migration_long_version_fixed.py
+
+include tests/test_aml_hosted_retrieval_profile.py
+
+include tests/test_aml_s1_evidence.py
+
+include tests/test_aml_s2_complementary.py

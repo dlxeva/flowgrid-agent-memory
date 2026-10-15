@@ -5,8 +5,14 @@ official Python SDK v2. The base package remains dependency-free; MCP support
 is installed explicitly:
 
 ```bash
-python3 -m pip install 'flowgrid-agent-memory[mcp]'
+python3 -m pip install '.[mcp]'
 ```
+
+Run this from a reviewed source checkout; optional dependencies may be fetched
+from the index. A package-name index install does not bind the local candidate.
+Use exact reviewed wheel files and disable indexes for an offline candidate.
+
+中文说明：本地源码安装可下载可选依赖；同名索引包不证明当前候选身份，离线安装须绑定精确 wheel。
 
 The package constraint is `mcp>=2,<3`. The adapter uses the public v2
 `MCPServer` API, its default stdio transport, and is tested with the official
@@ -15,6 +21,17 @@ transport. The SDK negotiates the 2026-07-28 protocol and supported older
 protocols; this project does not implement JSON-RPC or MCP framing itself.
 
 ## Trusted local launch
+
+The CLI configuration below supplies a static trusted principal. It does not
+install a live identity issuer or refresh revocation automatically. For host
+lifecycle checks, trusted Python code must explicitly configure a reader
+factory, or a matching reader/writer pair. Reader-only configuration refuses
+ingest/extract; paired configuration permits raw ingestion and candidate
+extraction only. All factories are absent from tool arguments and CLI JSON.
+See [HOST_LIFECYCLE_READS.md](HOST_LIFECYCLE_READS.md) and
+[HOST_LIFECYCLE_WRITES.md](HOST_LIFECYCLE_WRITES.md).
+
+中文说明：下方命令使用静态宿主配置，不自动刷新真实身份或撤权。实时读取门和候选写入门须由可信 Python 宿主显式接入；工具请求不能开启它们。
 
 The stdio process requires two explicit absolute paths. It never obtains a
 database path, principal, authority, permissions, or user grants from MCP tool

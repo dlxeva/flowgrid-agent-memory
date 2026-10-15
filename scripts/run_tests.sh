@@ -25,6 +25,17 @@ for argument in "$@"; do
   esac
 done
 
+# This total gate requires the complete reviewed checkout, not the minimal sdist.
+REQUIRED_HELPERS=(smoke_api.py smoke_aml_hosted.py smoke_rest_v1.py run_governance_eval.py)
+if [[ "$WITH_MCP" == "1" ]]; then REQUIRED_HELPERS+=(smoke_mcp.py); fi
+if [[ "$WITH_EVAL" == "1" ]]; then REQUIRED_HELPERS+=(run_eval.py run_scan.py); fi
+for helper in "${REQUIRED_HELPERS[@]}"; do
+  if [[ ! -f "$REPO/scripts/$helper" ]]; then
+    printf 'Full acceptance requires a complete reviewed source checkout; helper missing: %s\n' "$helper" >&2
+    exit 2
+  fi
+done
+
 section() { printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }
 
 section "0. 环境"

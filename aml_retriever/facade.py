@@ -16,6 +16,7 @@ from .access import AccessContext, DisclosurePolicy, authorize_memory_read
 from .api import MemoryService
 from .compiler import CompilationReceipt
 from .config import RetrieverConfig
+from .retriever import RetrieverDB
 from .context import ContextPack, TokenCounter
 from .extraction import MemoryExtractor
 from .governance import (
@@ -104,6 +105,29 @@ class FlowGridMemory:
         if service is None:
             raise RuntimeError("FlowGridMemory is closed")
         return service
+
+    @classmethod
+    def open_read_only(cls, *, db_path: str, config: RetrieverConfig | None = None) -> FlowGridMemory:
+        """Open an existing initialized file without creating or migrating it.
+
+        The trusted host still supplies AccessContext for governed reads. Write
+        methods fail with PermissionError, and every pooled connection uses
+        SQLite mode=ro. This does not authenticate the host or freeze live data.
+        WAL coordination may create/update SQLite sidecars; this is not a
+        forensic guarantee of zero filesystem writes in the source directory.
+        """
+        if not isinstance(db_path, str) or not db_path.strip():
+            raise ValueError("db_path must be an explicit absolute file path")
+        cfg = copy.deepcopy(config) if config is not None else RetrieverConfig()
+        cfg.db_path = db_path
+        db = RetrieverDB(cfg, read_only=True)
+        instance = cls.__new__(cls)
+        try:
+            instance._service = MemoryService(cfg, db=db)
+        except Exception:
+            db.close()
+            raise
+        return instance
 
     def ingest_raw_events(
         self,
@@ -294,6 +318,51 @@ class FlowGridMemory:
     def query_audit(self, **kwargs) -> AuthorizedMemoryResult:
         return self.query_memory(mode="audit", **kwargs)
 
+    def compose_numeric_evidence(
+        self, *, principal, user_id: str, spans, unit: str, operation: str,
+        requested_scope: Mapping[str, str] | None = None,
+        enabled: bool = False, allow_cross_session: bool = False,
+    ) -> dict[str, object]:
+        """Opt-in conditional arithmetic from freshly authorized raw evidence.
+
+        Raw/history disclosure requires read+audit+evidence, a concrete user
+        grant and allowed audit purpose. Principal identity is host-owned, not
+        request/model data. Results are read snapshots, not reusable grants or
+        semantic proof. Existing transports do not expose this operation.
+        """
+        from .auth import (AuthorizationError, PERMISSION_EVIDENCE,
+                           OPERATION_READ_AUDIT, authorize_operation)
+        from .extraction import EvidenceSpan, ExtractionValidationError
+        from .numeric_composition import (NumericCompositionError, NumericOperand,
+                                          compose_numbers)
+
+        if type(enabled) is not bool or not enabled:
+            raise NumericCompositionError("numeric_composition_disabled")
+        access = authorize_operation(principal, user_id=user_id,
+                                     requested_scope=requested_scope,
+                                     operation=OPERATION_READ_AUDIT)
+        if PERMISSION_EVIDENCE not in principal.permissions:
+            raise AuthorizationError()
+        if (type(spans) not in (list, tuple) or not 2 <= len(spans) <= 32
+                or any(type(s) is not EvidenceSpan for s in spans)):
+            raise NumericCompositionError("bounded_typed_spans_required")
+        ids = list(dict.fromkeys(s.source_event_id for s in spans))
+        try:
+            events = self._active().db.raw_events_for_extraction(user_id=user_id, event_ids=ids)
+        except ExtractionValidationError:
+            raise NumericCompositionError("source_unavailable") from None
+        effective = dict(access.effective_scope)
+        if any(any(event.scope.get(k) != v for k, v in effective.items()) for event in events):
+            raise AuthorizationError()
+        by_id = {e.id: e for e in events}
+        result = compose_numbers([NumericOperand(by_id[s.source_event_id], s, unit) for s in spans],
+                                 operation=operation, enabled=True,
+                                 allow_cross_session=allow_cross_session)
+        result["authorization_verified"] = True
+        result["authorization_scope"] = effective
+        result["source_read"] = "current_database_snapshot"
+        return result
+
     def compile_context(
         self,
         *,
@@ -351,6 +420,23 @@ class FlowGridMemory:
             deleted_extraction_receipts=int(result["deleted_extraction_receipts"]),
             deleted_proposal_origins=int(result["deleted_proposal_origins"]),
         )
+
+    def erase_source(self, *, user_id: str, source_event_id: str,
+                     actor: str, actor_authority: str, reason: str) -> dict[str, object]:
+        """Opt-in owner-only source erasure; also invalidates all user extraction
+        receipts because their persisted schema has no input manifest.
+
+        Unrelated origins remain and keep their old keys bound. Ingest receipts
+        and session sequence counters remain, preventing Add replay/ID reuse.
+        This does not guarantee secure wiping of storage or external copies.
+        """
+        if actor_authority != "owner":
+            raise GovernanceError("source erase requires owner authority")
+        if not isinstance(actor, str) or not actor.strip():
+            raise GovernanceError("source erase actor is required")
+        if not isinstance(reason, str) or not reason.strip():
+            raise GovernanceError("source erase reason is required")
+        return self._active().delete_source(user_id, source_event_id)
 
     def close(self) -> None:
         service, self._service = self._service, None

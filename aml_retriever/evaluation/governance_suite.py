@@ -1836,6 +1836,8 @@ def _op_legacy_floor(fixture: Mapping[str, Any], runtime: EvaluationRuntime) -> 
         "baseline_sha256": canonical_sha256(baseline),
         "source_commit": provenance["commit"],
         "source_tree": provenance["tree"],
+        "source_verification": provenance["verification"],
+        "source_commit_object_verified": provenance["commit_object_verified"],
         "dataset_sha256": dataset_sha,
         "dataset_matches": dataset_matches,
         "stage": stage_name,

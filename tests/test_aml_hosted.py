@@ -256,6 +256,10 @@ class WheelInstallerTests(unittest.TestCase):
         def wheel(directory: Path, commit: str) -> Path:
             info = "flowgrid_agent_memory-0.1.1.dist-info"
             contents = {
+                "aml_retriever/release_identity.json": json.dumps({
+                    "schema": "flowgrid.agent-memory.release-identity/v1",
+                    "source_state": "committed", "source_commit": commit,
+                }, sort_keys=True).encode("utf-8"),
                 "aml_retriever/__init__.py": b"",
                 "aml_retriever/aml_hosted.py": (
                     "def runtime_identity():\n    return "

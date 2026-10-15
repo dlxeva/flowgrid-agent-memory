@@ -27,6 +27,11 @@ FlowGrid Agent Memory 保存不可改写的原始证据，把提取结果与已�
 
 ## 当前产品状态
 
+当前工作区与已做本地验证的源码证据候选属于不同对象。该候选尚未提交或正式发布，
+没有新的官方 AML 成绩或已验证的签名证明。本地构建、容器及 SBOM 检查不证明生产
+可用或真实任务收益。见[候选发行说明](docs/RELEASE_NOTES.md)。
+
+
 - 产品版本：`0.1.1`
 - AML Add/Search 适配层版本：`1.1.0`
 - 基础运行环境：Python 3.11+、标准库、启用 FTS5 的 SQLite
@@ -165,7 +170,7 @@ flowgrid-memory-rest --config /absolute/path/to/product.json
 隐私擦除或管理员工具：
 
 ```bash
-python3 -m pip install 'flowgrid-agent-memory[mcp]'
+python3 -m pip install '.[mcp]'
 flowgrid-memory-mcp \
   --db /absolute/path/to/memory.db \
   --principal-config /absolute/path/to/mcp-principal.json
@@ -198,9 +203,9 @@ flowgrid-memory-mcp \
 
 ## 发布证据
 
-发布工作流会重新构建并执行全量测试，在全新环境安装 wheel，生成校验和、验收
-JSON、SPDX SBOM 与 provenance JSON，并为 wheel 和 sdist 创建 GitHub Sigstore
-证明。稳定验收条件见 [验收标准](docs/ACCEPTANCE_CRITERIA.md)。
+正式发布须重新构建、测试、全新安装并核验校验和、验收证据、SBOM及签名。当前未提交候选没有已验证的GitHub Sigstore证明，自生成JSON不证明CI执行或签名。
+
+上述MCP extra应从已审阅本地源码安装，可下载依赖；离线使用精确wheel并禁用索引。见[候选发行说明](docs/RELEASE_NOTES.md)。
 
 ## 参与贡献与安全报告
 

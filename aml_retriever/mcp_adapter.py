@@ -79,7 +79,6 @@ def _sdk_error(code: str):
 
 def _safe_core_result(operation):
     """Keep unexpected core exceptions below the SDK logging boundary."""
-
     try:
         return operation()
     except Exception:
@@ -169,7 +168,8 @@ class _SafeToolBoundary:
         return result
 
 
-def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
+def create_mcp_server(*, db_path: str, principal: TrustedPrincipal,
+                      lifecycle_reader_factory=None, lifecycle_writer_factory=None):
     """Create the official SDK v2 server with exactly four safe tools.
 
     No database path or identity is inferred from the environment or current
@@ -184,7 +184,9 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
     if not isinstance(db_path, str) or not _absolute_or_memory(db_path):
         raise ValueError("db_path must be absolute or ':memory:'")
 
-    core = GovernedMCPTools(db_path=db_path, principal=principal)
+    core = GovernedMCPTools(db_path=db_path, principal=principal,
+                           lifecycle_reader_factory=lifecycle_reader_factory,
+                           lifecycle_writer_factory=lifecycle_writer_factory)
 
     @asynccontextmanager
     async def lifespan(_server):
@@ -219,15 +221,13 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         session_id: str | None = None,
         scope: dict[str, str] | None = None,
     ) -> dict[str, object]:
-        return _safe_core_result(
-            lambda: core.memory_ingest_events(
-                request_id=request_id,
-                user_id=user_id,
-                messages=messages,
-                session_id=session_id,
-                scope=scope,
-            )
-        )
+        return _safe_core_result(lambda: core.memory_ingest_events(
+            request_id=request_id,
+            user_id=user_id,
+            messages=messages,
+            session_id=session_id,
+            scope=scope,
+        ))
 
     @server.tool(
         name="memory_extract_candidates",
@@ -240,14 +240,12 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         idempotency_key: str,
         scope: dict[str, str] | None = None,
     ) -> dict[str, object]:
-        return _safe_core_result(
-            lambda: core.memory_extract_candidates(
-                user_id=user_id,
-                raw_event_ids=raw_event_ids,
-                idempotency_key=idempotency_key,
-                scope=scope,
-            )
-        )
+        return _safe_core_result(lambda: core.memory_extract_candidates(
+            user_id=user_id,
+            raw_event_ids=raw_event_ids,
+            idempotency_key=idempotency_key,
+            scope=scope,
+        ))
 
     @server.tool(
         name="memory_query_current",
@@ -262,16 +260,14 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         max_records: int = 100,
         max_chars: int = 32_768,
     ) -> dict[str, object]:
-        return _safe_core_result(
-            lambda: core.memory_query_current(
-                user_id=user_id,
-                memory_key=memory_key,
-                query=query,
-                scope=scope,
-                max_records=max_records,
-                max_chars=max_chars,
-            )
-        )
+        return _safe_core_result(lambda: core.memory_query_current(
+            user_id=user_id,
+            memory_key=memory_key,
+            query=query,
+            scope=scope,
+            max_records=max_records,
+            max_chars=max_chars,
+        ))
 
     @server.tool(
         name="memory_compile_context",
@@ -287,17 +283,15 @@ def create_mcp_server(*, db_path: str, principal: TrustedPrincipal):
         max_chars: int = 32_768,
         max_tokens: int | None = None,
     ) -> dict[str, object]:
-        return _safe_core_result(
-            lambda: core.memory_compile_context(
-                user_id=user_id,
-                memory_key=memory_key,
-                query=query,
-                scope=scope,
-                max_records=max_records,
-                max_chars=max_chars,
-                max_tokens=max_tokens,
-            )
-        )
+        return _safe_core_result(lambda: core.memory_compile_context(
+            user_id=user_id,
+            memory_key=memory_key,
+            query=query,
+            scope=scope,
+            max_records=max_records,
+            max_chars=max_chars,
+            max_tokens=max_tokens,
+        ))
 
     return server
 

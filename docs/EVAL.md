@@ -280,7 +280,7 @@ python3 scripts/run_eval.py --scale small --difficulty mixed --suite relative_ti
 ## 6. 复现清单
 
 ```bash
-cd aml-retriever
+# 在完整且已审阅的源码仓库根目录运行；精简 sdist 不包含全部测试/脚本
 python3 -m unittest discover -s tests            # 全量测试
 python3 scripts/smoke_api.py                     # HTTP 契约 smoke（自起临时服务）
 python3 scripts/run_eval.py  --scale medium --difficulty mixed  --seed 20260806 --top-k 100
@@ -353,8 +353,12 @@ golden，也不应被描述成不可绕过的完整 freeze 命令。
 自然语言提取是宿主适配能力，不进入零依赖 core，也不改变 AML Add/Search。固定模型配置的
 合成盲测命令如下：
 
+此命令仅适用于包含该辅助脚本的完整 reviewed checkout；精简源码包不分发该脚本。运行会向模型服务发送合成 prompt，且可能产生费用，须先单独获得发送与费用授权。--allow-paid-provider 只表示已获得对应授权，不覆盖费用暂停或预算限制；未授权时不要运行。
+
+This helper requires the complete reviewed checkout and separate authorization for provider spending and synthetic prompt disclosure. The minimal sdist does not include it. The explicit flag does not override a spending pause.
+
 ```bash
-python3 scripts/evaluate_natural_language_extractor.py
+python3 scripts/evaluate_natural_language_extractor.py --allow-paid-provider
 ```
 
 脚本生成 nonce 标记的 4 个正例和 4 个负例，通过 Hermes one-shot 调用显式指定的

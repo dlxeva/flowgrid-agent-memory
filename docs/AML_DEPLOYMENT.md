@@ -118,8 +118,14 @@ bash deploy/aml/install-wheel.sh \
 ```
 
 `AML_INSTALL_PYTHON` may select an absolute Python 3.11+ executable. The
-installer checks the wheel digest, uses `--no-index --no-deps --force-reinstall`, validates
-committed provenance, and does not configure credentials or start a service.
+installer checks the wheel digest and required committed identity fields before
+changing the target environment, then uses `--no-index --no-deps --force-reinstall`
+and validates the installed runtime identity. It does not configure credentials
+or start a service. These are artifact-byte and manifest/runtime checks, not
+cryptographic verification of provenance or SBOM signatures. The operator must
+independently review the artifact hash, source commit and signed evidence.
+
+中文说明：安装脚本先查摘要和已提交身份字段，再安装并查运行时；它不验证签名。真实来源、签名和安装授权仍须独立核对，合法安装失败可能留下部分环境状态，不提供事务回滚。
 When an existing virtual environment already contains the same product
 version, the reviewed wheel is still reinstalled; an older build with the same
 version number cannot satisfy this install step by remaining in place.
