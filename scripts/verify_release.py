@@ -41,6 +41,16 @@ DEFAULT_EPOCH = 1788307200
 # New runtime modules must be explicitly reviewed into this list.
 SOURCE_ALLOWLIST = frozenset(
     {
+        'aml_retriever/aml_model_budget.py',
+        'aml_retriever/aml_semantic_host.py',
+        'tests/test_aml_model_budget.py',
+        'tests/test_aml_semantic_host.py',
+        'docs/AML_SEMANTIC_HOST.md',
+        'aml_retriever/aml_semantic_cues.py',
+        'tests/test_aml_cue_complete_coverage.py',
+        'aml_retriever/aml_semantic_cues.py',
+        'tests/test_aml_semantic_cues.py',
+        'tests/test_aml_cue_transport_diagnostics.py',
         'tests/test_aml_s2_complementary.py',
         'tests/test_aml_s1_evidence.py',
         'tests/test_aml_hosted_retrieval_profile.py',

@@ -7,6 +7,9 @@ from pathlib import Path
 
 
 RUNTIME_SOURCE_FILES = frozenset({
+    'aml_retriever/aml_model_budget.py',
+    'aml_retriever/aml_semantic_host.py',
+    'aml_retriever/aml_semantic_cues.py',
     'aml_retriever/host_lifecycle_writes.py',
     'aml_retriever/host_lifecycle_reads.py',
         'aml_retriever/completion_adapter.py',

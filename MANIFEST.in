@@ -73,3 +73,7 @@ include tests/test_aml_hosted_retrieval_profile.py
 include tests/test_aml_s1_evidence.py
 
 include tests/test_aml_s2_complementary.py
+
+include aml_retriever/aml_semantic_cues.py tests/test_aml_semantic_cues.py tests/test_aml_cue_transport_diagnostics.py
+
+include aml_retriever/aml_model_budget.py aml_retriever/aml_semantic_host.py tests/test_aml_model_budget.py tests/test_aml_semantic_host.py docs/AML_SEMANTIC_HOST.md aml_retriever/aml_semantic_cues.py tests/test_aml_cue_complete_coverage.py
