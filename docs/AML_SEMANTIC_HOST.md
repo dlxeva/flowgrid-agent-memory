@@ -20,13 +20,23 @@ configured. It makes no quality or official evaluation claim.
   are not invoices and cannot guarantee the provider's final billed amount.
 - An unresolved call keeps its entire reservation and blocks new calls. Provider
   or semantic failure persists a halt. Restarting does not remove either state.
-- Operations are serial with immediate busy rejection, without queued paid work.
-  The existing hosted adapter may return a generic 500 for internal 503 failures.
-  This wrapper does not claim a new HTTP error contract or Full-scale capacity.
-- Model network/process limits are120/130 seconds with no retry. Configure
-  hosted operation/request limits as270/300 seconds. Two ordinary chunks fit
-  this operation limit; unusually large messages can create more chunks and
-  require capacity review before a Full run.
+- HTTP operations use a bounded FIFO (16 by default, including active work),
+  while provider calls and source/cue operations remain serial. Queue saturation,
+  waiting expiry and cancellation return 429 without starting provider work.
+  Excess work is not retained for later execution. Shutdown cancels queued work.
+- Waiting shares the original HTTP operation deadline. The handler propagates
+  deadline/cancellation, and every model call checks it before reserving and
+  before launching. Provider network/process limits are at most120/130 seconds,
+  additionally clipped to remaining operation time, without automatic retries.
+  A paid call with unknown outcome still retains its hold and halts the scope.
+- Configure hosted operation/request limits as270/300 seconds, max_inflight at
+  least queue_capacity and max_connections at least queue_capacity+2. This
+  capacity includes waiting requests; it is not16 concurrent model calls. Very
+  slow upstream calls or large multi-chunk Adds can exhaust the shared deadline.
+  Synthetic concurrent tests do not establish real provider or Full capacity.
+- This changes the runtime from fixed commit9bc6488. It is a local candidate
+  until separately published, deployed and registered/disclosed to AML. Never
+  silently replace the implementation of an already-bound evaluation version.
 
 ## Explicit configuration
 
@@ -44,6 +54,8 @@ Configuration has exactly four sections:
     "db_path": "/private/service/source.sqlite",
     "host": "127.0.0.1",
     "port": 8081,
+      "max_inflight": 16,
+      "max_connections": 32,
     "operation_timeout_seconds": 270,
     "request_timeout_seconds": 300,
     "require_build_identity": true
@@ -52,7 +64,8 @@ Configuration has exactly four sections:
     "model_key_file": "/private/service/openai.key",
     "cue_db_path": "/private/service/cues.sqlite",
     "budget_db_path": "/private/service/budget.sqlite",
-    "enabled": true
+      "enabled": true,
+      "queue_capacity": 16
   },
   "policy": {
     "scope": "replace-with-approved-scope",

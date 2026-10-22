@@ -9,10 +9,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import threading
 import subprocess
 import sys
 import sqlite3
+import time
 from pathlib import Path
 from .api import ApiError, validate_add_payload, validate_search_payload
 from .store import _build_match
@@ -31,7 +33,7 @@ COMPLETE_PROTOCOL='aml-semantic-cues/v1.2-complete'
 COMPLETE_DEEPSEEK_PROTOCOL='aml-semantic-cues/deepseek-v1.2-complete'
 
 _WORKER=r'''
-import json,sys,urllib.request,urllib.error
+import json,sys,time,urllib.request,urllib.error
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*args,**kwargs):return None
 def fail(kind,status=None):
@@ -50,6 +52,8 @@ try:
     endpoint,model=endpoints[provider]
     if request.get('model')!=model:raise ValueError()
     req=urllib.request.Request(endpoint,data=raw,headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+    if data.get('deadline') is not None and time.monotonic()>=data['deadline']:
+        raise TimeoutError()
     with opener.open(req,timeout=20) as response:body=response.read(16385)
     sys.stdout.buffer.write(body)
     if len(body)>16384:fail('response_size_limit')
@@ -82,17 +86,29 @@ class OpenAICueTransport:
             raise ValueError('cue_transport_deadline_bounds')
         self.credential=credential;self.reserve=reserve;self.settle=settle;self.unknown=unknown
         self.worker=_WORKER.replace('timeout=20','timeout='+str(network_seconds),1)
+        self.network_seconds=network_seconds
         self.process_seconds=process_seconds
         # Explicit trusted-host sink only. Never send diagnostics to a model,
         # log response text, or expose credentials/exception messages via API.
         self.observe=observe
 
-    def __call__(self,value):
+    def __call__(self,value,*,deadline=None,cancelled=None):
+        def remaining():
+            if cancelled is not None and cancelled.is_set():
+                raise ValueError('cue_request_cancelled')
+            if deadline is None:return None
+            if type(deadline) not in (int,float) or not math.isfinite(deadline):
+                raise ValueError('cue_request_deadline')
+            left=deadline-time.monotonic()
+            if left<=.1:raise ValueError('cue_request_deadline')
+            return left
+        remaining()
         owned=copy.deepcopy(value)
         data=decode(owned['messages'][1]['content'])
         stage='add' if isinstance(data,dict) and set(data)=={'messages'} else 'search'
         if owned!=request(stage,data,provider=self.provider):
             raise ValueError('cue_wire_drift')
+        remaining()
         token=self.reserve(sha(encode(owned)),MODELS[self.provider],MAX_INPUT_BYTES,MAX_OUTPUT_TOKENS)
         phase='worker'
         def observed(event,raw=None):
@@ -100,7 +116,15 @@ class OpenAICueTransport:
             phase='observation'
             if self.observe is not None:self.observe(event,raw)
         try:
-            p=subprocess.run([sys.executable,'-I','-B','-c',self.worker],input=encode({'credential':self.credential,'request':owned,'provider':self.provider}),capture_output=True,timeout=self.process_seconds)
+            left=remaining()
+            process_seconds=(self.process_seconds if left is None else min(self.process_seconds,left-.05))
+            worker=self.worker
+            if left is not None:
+                network_seconds=min(self.network_seconds,max(.01,process_seconds-.05))
+                worker=worker.replace('timeout='+str(self.network_seconds), 'timeout='+repr(network_seconds),1)
+            invocation={'credential':self.credential,'request':owned,'provider':self.provider}
+            if deadline is not None:invocation['deadline']=deadline
+            p=subprocess.run([sys.executable,'-I','-B','-c',worker],input=encode(invocation),capture_output=True,timeout=process_seconds)
             if p.returncode!=0:
                 event={'kind':'worker_error'}
                 try:
@@ -117,6 +141,7 @@ class OpenAICueTransport:
             _,digest,usage=completion(p.stdout,provider=self.provider)
             phase='budget_settlement'
             self.settle(token,usage,digest)
+            remaining()
             return p.stdout
         except Exception as error:
             # A failed sink must fail closed; do not recursively call it.

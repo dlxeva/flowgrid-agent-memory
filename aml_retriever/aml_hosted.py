@@ -415,16 +415,26 @@ class _HostedHandler(BaseHTTPRequestHandler):
             if not self.server.operations.acquire(blocking=False):
                 raise ApiError(429, "")
             transferred = False
+            cancelled = threading.Event()
             try:
                 payload = self._body()
                 operation = self.server.service.official_add if route == "/add" else self.server.service.official_search
-                future = self.server.executor.submit(operation, payload)
+                deadline = ((time.monotonic() if self.server.deadline_dispatch is None else started)
+                            + self.server.config.operation_timeout_seconds)
+                if self.server.deadline_dispatch is None:
+                    future = self.server.executor.submit(operation, payload)
+                else:
+                    future = self.server.executor.submit(self.server.deadline_dispatch,
+                        route, payload, deadline, cancelled)
                 future.add_done_callback(lambda _: self.server.operations.release())
                 transferred = True
-                body = future.result(timeout=self.server.config.operation_timeout_seconds)
+                body = future.result(timeout=max(0, deadline - time.monotonic()))
                 status = 200
                 self._send(status, body)
             finally:
+                cancelled.set()
+                if 'future' in locals() and not future.done():
+                    future.cancel()
                 if not transferred:
                     self.server.operations.release()
         except ApiError as exc:
@@ -452,7 +462,14 @@ class HostedAMLServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, config: HostedConfig, service: MemoryService | None = None, *, quiet: bool = False):
+    def __init__(self, config: HostedConfig, service: MemoryService | None = None, *, quiet: bool = False,
+                 deadline_dispatch=None, deadline_shutdown=None):
+        if deadline_dispatch is not None and not callable(deadline_dispatch):
+            raise _invalid_configuration()
+        if deadline_shutdown is not None and not callable(deadline_shutdown):
+            raise _invalid_configuration()
+        self.deadline_dispatch = deadline_dispatch
+        self.deadline_shutdown = deadline_shutdown
         self.config = config
         self.identity = runtime_identity()
         if config.require_build_identity and (
@@ -543,7 +560,14 @@ class HostedAMLServer(ThreadingHTTPServer):
         # ThreadingHTTPServer otherwise prints exception text and traceback.
         return
 
+    def shutdown(self) -> None:
+        if self.deadline_shutdown is not None:
+            self.deadline_shutdown()
+        super().shutdown()
+
     def server_close(self) -> None:
+        if self.deadline_shutdown is not None:
+            self.deadline_shutdown()
         super().server_close()
         self.executor.shutdown(wait=True, cancel_futures=True)
 

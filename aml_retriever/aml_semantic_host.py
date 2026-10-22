@@ -12,8 +12,12 @@ import os
 from pathlib import Path
 import stat
 import threading
+import time
+from collections import deque
 
 from .aml_model_budget import BudgetPolicy, ModelBudget, MODEL
+
+_REQUEST = threading.local()
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,7 @@ class SemanticHostConfig:
     budget_db_path: str
     policy: BudgetPolicy
     enabled: bool = False
+    queue_capacity: int = 16
 
     def validate(self, hosted):
         if self.enabled is not True or not isinstance(self.policy, BudgetPolicy):
@@ -36,12 +41,17 @@ class SemanticHostConfig:
             raise ValueError('semantic_host_separate_files')
         if hosted.operation_timeout_seconds < 265:
             raise ValueError('semantic_host_worker_deadline')
+        if (type(self.queue_capacity) is not int or not 16 <= self.queue_capacity <= 64 or
+                hosted.max_inflight < self.queue_capacity or
+                hosted.max_connections < self.queue_capacity + 2):
+            raise ValueError('semantic_host_queue_capacity')
         return {'enabled': True, 'model': MODEL, 'budget_microusd': self.policy.budget_microusd,
                 'max_attempts': self.policy.max_attempts, 'input_token_limit': 32768,
                 'output_token_limit': 768, 'input_bytes_limit': 16384,
                 'complete_add_coverage': True, 'network_timeout_seconds':120,
                 'process_timeout_seconds':130, 'network_called': False,
-                'credentials_read': False}
+                'credentials_read': False, 'queue_capacity': self.queue_capacity,
+                'model_concurrency': 1, 'queue_deadline_included': True}
 
 
 def _private_key(path):
@@ -76,7 +86,9 @@ class _GuardedTransport:
             raise ValueError('semantic_host_busy')
         try:
             try:
-                raw = self.transport(wire)
+                context = getattr(_REQUEST, 'context', None)
+                raw = (self.transport(wire) if context is None else
+                       self.transport(wire, deadline=context[0], cancelled=context[1]))
                 result, _, _ = self.cues.completion(raw, provider='openai')
                 data = self.cues.decode(wire['messages'][1]['content'])
                 if set(data) == {'messages'}:
@@ -106,22 +118,77 @@ class _GuardedTransport:
 
 
 class _AdmissionService:
-    """No paid operation may queue behind another HTTP/backend operation."""
-    def __init__(self, service):
+    """Bounded FIFO; waiting counts against the original HTTP deadline.
+
+    No background worker owns queued work. Its HTTP executor thread must still
+    be live, uncancelled and within its deadline before entering the backend.
+    """
+    def __init__(self, service, capacity=16, operation_seconds=270):
+        if type(capacity) is not int or not 1 <= capacity <= 128:
+            raise ValueError('semantic_host_queue_capacity')
         self._service = service
-        self._admission = threading.Lock()
+        self._condition = threading.Condition()
+        self._waiting = deque()
+        self._active = False
+        self._closing = False
+        self._active_cancelled = None
+        self._capacity = capacity
+        self._operation_seconds = operation_seconds
 
     def __getattr__(self, name):
         return getattr(self._service, name)
 
-    def _call(self, name, payload):
+    def _call(self, name, payload, deadline=None, cancelled=None):
         from .api import ApiError
-        if not self._admission.acquire(blocking=False):
-            raise ApiError(503, 'semantic service busy')
+        deadline = time.monotonic() + self._operation_seconds if deadline is None else deadline
+        cancelled = threading.Event() if cancelled is None else cancelled
+        ticket = object()
+        def expired():
+            return self._closing or cancelled.is_set() or time.monotonic() >= deadline
+        with self._condition:
+            if expired() or len(self._waiting) + int(self._active) >= self._capacity:
+                raise ApiError(429, 'semantic queue unavailable')
+            self._waiting.append(ticket)
+            try:
+                while self._active or self._waiting[0] is not ticket:
+                    if expired():
+                        raise ApiError(429, 'semantic queue expired')
+                    self._condition.wait(min(.05, max(0, deadline - time.monotonic())))
+                if expired():
+                    raise ApiError(429, 'semantic queue expired')
+                self._waiting.popleft()
+                self._active = True
+                self._active_cancelled = cancelled
+            except BaseException:
+                self._waiting.remove(ticket)
+                self._condition.notify_all()
+                raise
+        previous = getattr(_REQUEST, 'context', None)
+        _REQUEST.context = (deadline, cancelled)
         try:
+            if expired():
+                raise ApiError(429, 'semantic queue expired')
             return getattr(self._service, name)(payload)
         finally:
-            self._admission.release()
+            _REQUEST.context = previous
+            with self._condition:
+                self._active = False
+                self._active_cancelled = None
+                self._condition.notify_all()
+
+    def cancel_pending(self):
+        with self._condition:
+            self._closing = True
+            if self._active_cancelled is not None:
+                self._active_cancelled.set()
+            self._condition.notify_all()
+
+    def dispatch(self, route, payload, deadline, cancelled):
+        from .api import ApiError
+        names = {'/add': 'official_add', '/search': 'official_search'}
+        if route not in names:
+            raise ApiError(404, 'route not found')
+        return self._call(names[route], payload, deadline, cancelled)
 
     def official_add(self, payload): return self._call('official_add', payload)
     def official_search(self, payload): return self._call('official_search', payload)
@@ -154,14 +221,19 @@ def create_server(hosted, semantic):
         service = cues.SemanticCueService(core, _GuardedTransport(transport, ledger, cues),
                     enabled=True, cue_db_path=semantic.cue_db_path, provider='openai',
                     complete_add_coverage=True)
-        server = HostedAMLServer(replace(hosted, retrieval_json='{}'), service=_AdmissionService(service), quiet=True)
+        admission = _AdmissionService(service, semantic.queue_capacity, hosted.operation_timeout_seconds)
+        server = HostedAMLServer(replace(hosted, retrieval_json='{}'), service=admission,
+                                 quiet=True, deadline_dispatch=admission.dispatch,
+                                 deadline_shutdown=admission.cancel_pending)
     except BaseException:
         if service is not None: service.close()
         else: core.close()
         raise
     server.identity.update(semantic_budget_enforced=True, semantic_cues_add_input_coverage='complete',
         semantic_cues_protocol=cues.COMPLETE_PROTOCOL, semantic_cues_model=MODEL, semantic_cues_provider='openai',
-        semantic_cues_default_service=False, semantic_cues_gain_verified=False)
+        semantic_cues_default_service=False, semantic_cues_gain_verified=False,
+        semantic_http_queue_capacity=semantic.queue_capacity, semantic_model_concurrency=1,
+        semantic_queue_deadline_included=True)
     # Local trusted-operator inspection only; not included in public health.
     server.model_budget = ledger
     return server
