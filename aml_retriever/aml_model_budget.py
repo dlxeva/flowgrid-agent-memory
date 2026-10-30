@@ -27,12 +27,14 @@ class BudgetPolicy:
     scope: str
     implementation_sha256: str
     profile_sha256: str
-    budget_microusd: int
-    max_attempts: int
+    budget_microusd: int | None
+    max_attempts: int | None
     input_token_limit: int = 32768
     output_token_limit: int = 768
     input_bytes_limit: int = 16384
     model: str = MODEL
+    max_concurrent_calls: int = 1
+    isolate_unknown_calls: bool = False
 
     def __post_init__(self):
         if not re.fullmatch(r'[A-Za-z0-9_.-]{1,96}', self.scope):
@@ -40,12 +42,20 @@ class BudgetPolicy:
         if not all(isinstance(v, str) and _SHA.fullmatch(v) for v in
                    (self.implementation_sha256, self.profile_sha256)):
             raise ValueError('budget_identity')
-        for field in ('budget_microusd', 'max_attempts', 'input_token_limit',
+        for field in ('budget_microusd', 'max_attempts'):
+            value = getattr(self, field)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError('budget_positive_integer')
+        if type(self.max_concurrent_calls) is not int or not 1 <= self.max_concurrent_calls <= 8:
+            raise ValueError('budget_concurrency')
+        if type(self.isolate_unknown_calls) is not bool:
+            raise ValueError('budget_failure_mode')
+        for field in ('input_token_limit',
                       'output_token_limit', 'input_bytes_limit'):
             if type(getattr(self, field)) is not int or getattr(self, field) <= 0:
                 raise ValueError('budget_positive_integer')
-        if (self.model != MODEL or self.input_token_limit != 32768 or
-                self.output_token_limit != 768 or self.input_bytes_limit != 16384):
+        if (self.model != MODEL or (self.input_token_limit, self.output_token_limit,
+                                   self.input_bytes_limit) not in ((32768, 768, 16384), (65536, 4096, 65536))):
             raise ValueError('budget_protocol_drift')
 
     @staticmethod
@@ -59,7 +69,13 @@ class BudgetPolicy:
 
     @property
     def binding(self):
-        return json.dumps(asdict(self), sort_keys=True, separators=(',', ':'))
+        values = asdict(self)
+        # Keep existing serial ledger bindings byte-for-byte compatible.
+        if self.max_concurrent_calls == 1:
+            values.pop('max_concurrent_calls')
+        if not self.isolate_unknown_calls:
+            values.pop('isolate_unknown_calls')
+        return json.dumps(values, sort_keys=True, separators=(',', ':'))
 
 
 class ModelBudget:
@@ -119,18 +135,21 @@ class ModelBudget:
     def reserve(self, request_sha, model, input_bytes, output_tokens):
         p = self.policy
         if (not isinstance(request_sha, str) or not _SHA.fullmatch(request_sha) or
-                model != p.model or type(input_bytes) is not int or input_bytes != p.input_bytes_limit or
-                type(output_tokens) is not int or output_tokens != p.output_token_limit):
+                model != p.model or type(input_bytes) is not int or type(output_tokens) is not int or
+                (input_bytes, output_tokens) not in ((16384, 768), (65536, 4096)) or
+                input_bytes > p.input_bytes_limit or output_tokens > p.output_token_limit):
             raise BudgetStopped('budget_request_drift')
         with self._transaction() as con:
             if con.execute('SELECT 1 FROM halt').fetchone():
                 raise BudgetStopped('budget_halted')
             count, amount = con.execute('SELECT count(*), coalesce(sum(amount),0) FROM calls').fetchone()
-            # Serial provider calls: a pending worker or unresolved crash blocks
-            # reservations even in another process. No automatic retry/recovery.
-            if con.execute("SELECT 1 FROM calls WHERE status!='settled' LIMIT 1").fetchone():
+            reserved, unknown = con.execute(
+                "SELECT coalesce(sum(status='reserved'),0),coalesce(sum(status NOT IN ('reserved','settled')),0) FROM calls"
+            ).fetchone()
+            if (unknown and not p.isolate_unknown_calls) or reserved >= p.max_concurrent_calls:
                 raise BudgetStopped('budget_unresolved')
-            if count >= p.max_attempts or amount + p.hold > p.budget_microusd:
+            if ((p.max_attempts is not None and count >= p.max_attempts) or
+                    (p.budget_microusd is not None and amount + p.hold > p.budget_microusd)):
                 raise BudgetStopped('budget_limit')
             token = uuid.uuid4().hex
             con.execute('INSERT INTO calls(token,request_sha,status,amount) VALUES (?,?,?,?)',

@@ -12,8 +12,15 @@ from dataclasses import dataclass, field, asdict
 # 检索增强开关。每一项都可独立关闭，用于消融实验。
 # 默认值只反映"当前有离线证据支持"的配置，无证据的一律默认关闭。
 DEFAULT_FLAGS: dict[str, bool] = {
+    "experimental_reference_selection": False,  # semantic-only; select new reference excerpts
+    "experimental_record_headers": False,  # final source metadata format; no model calls
+    "experimental_clause_selection": False,  # semantic adapter; two bounded selection calls
+    "experimental_evidence_selection": False,  # semantic adapter only; bounded extra call
+    "experimental_reference_expansion": False,  # needs packing; not a privacy filter
+    "official_evidence_packing": False,  # unique selected originals, answer quality unverified
     "complementary_sources": False,  # fixed S2 retrieval candidate
     "official_source_labels": False,  # S1 independent candidate, not QA-proven
+    "packed_union_dedup": False,  # opt-in source-union dedup, only with official packing
     "source_aware_dedup": False,  # preserve distinct source occurrences
     "views": True,       # 聚合视图（window / session-segment）参与检索
     "exact": True,       # 精确子串 / token 覆盖率加权

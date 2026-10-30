@@ -49,6 +49,9 @@ include aml_retriever/numeric_selection.py
 include aml_retriever/reference_evidence_adapter.py
 include aml_retriever/sentence_scope_adapter.py
 include aml_retriever/source_calendar.py
+include aml_retriever/source_time.py
+include aml_retriever/reference_expansion.py
+include aml_retriever/evidence_selection.py
 include aml_retriever/temporal_comparison.py
 include aml_retriever/user_evidence_adapter.py
 include aml_retriever/user_evidence_policy.py
@@ -77,3 +80,17 @@ include tests/test_aml_s2_complementary.py
 include aml_retriever/aml_semantic_cues.py tests/test_aml_semantic_cues.py tests/test_aml_cue_transport_diagnostics.py
 
 include aml_retriever/aml_model_budget.py aml_retriever/aml_semantic_host.py tests/test_aml_model_budget.py tests/test_aml_semantic_host.py docs/AML_SEMANTIC_HOST.md aml_retriever/aml_semantic_cues.py tests/test_aml_cue_complete_coverage.py
+
+include aml_retriever/clause_selection.py
+include aml_retriever/reference_selection.py
+include aml_retriever/record_evidence.py
+
+include scripts/benchmark_full_capacity.py
+include scripts/prepare_full_capacity_ledger.py
+include tests/test_full_capacity.py
+include tests/test_full_capacity_migration.py
+include tests/test_reference_selection_queue.py
+include tests/test_reference_selection_service.py
+include tests/test_source_time.py
+include tests/test_ranking_source_time.py
+include tests/test_reference_expansion_service.py

@@ -36,7 +36,7 @@ def _failure_metadata(phase, code, halted):
         pass
 
 
-def _provider_metadata(event, raw=None):
+def _provider_metadata(event, raw=None, *, halted=True):
     # Transport also passes raw response bytes; deliberately never inspect them.
     kind = event.get('kind') if isinstance(event, dict) else None
     allowed = {'http_error', 'network_timeout', 'network_error',
@@ -44,7 +44,7 @@ def _provider_metadata(event, raw=None):
                'completion_validation_error',
                'budget_settlement_error'}
     if kind in allowed:
-        _failure_metadata('provider', kind, True)
+        _failure_metadata('provider', kind, halted)
 
 
 @dataclass(frozen=True)
@@ -56,12 +56,20 @@ class SemanticHostConfig:
     enabled: bool = False
     queue_capacity: int = 16
     recover_unknown_add_once: bool = False
+    model_concurrency: int = 1
+    isolate_provider_failures: bool = False
 
     def validate(self, hosted):
         if self.enabled is not True or not isinstance(self.policy, BudgetPolicy):
             raise ValueError('semantic_host_disabled')
         if type(self.recover_unknown_add_once) is not bool:
             raise ValueError('explicit_recovery_boolean_required')
+        if (type(self.model_concurrency) is not int or not 1 <= self.model_concurrency <= 8 or
+                self.model_concurrency != self.policy.max_concurrent_calls):
+            raise ValueError('semantic_host_concurrency')
+        if (type(self.isolate_provider_failures) is not bool or
+                self.isolate_provider_failures != self.policy.isolate_unknown_calls):
+            raise ValueError('semantic_host_failure_mode')
         paths = [self.model_key_file, self.cue_db_path, self.budget_db_path, hosted.db_path]
         for value in paths:
             p = Path(value)
@@ -76,12 +84,15 @@ class SemanticHostConfig:
                 hosted.max_connections < self.queue_capacity + 2):
             raise ValueError('semantic_host_queue_capacity')
         return {'enabled': True, 'model': MODEL, 'budget_microusd': self.policy.budget_microusd,
-                'max_attempts': self.policy.max_attempts, 'input_token_limit': 32768,
-                'output_token_limit': 768, 'input_bytes_limit': 16384,
+                'max_attempts': self.policy.max_attempts, 'input_token_limit': self.policy.input_token_limit,
+                'output_token_limit': self.policy.output_token_limit, 'input_bytes_limit': self.policy.input_bytes_limit,
                 'complete_add_coverage': True, 'network_timeout_seconds':120,
                 'process_timeout_seconds':130, 'network_called': False,
                 'credentials_read': False, 'queue_capacity': self.queue_capacity,
-                'model_concurrency': 1, 'queue_deadline_included': True}
+                'model_concurrency': self.model_concurrency, 'queue_deadline_included': True,
+                'fee_cap_enabled': self.policy.budget_microusd is not None,
+                'call_cap_enabled': self.policy.max_attempts is not None,
+                'provider_failure_isolation': self.isolate_provider_failures}
 
 
 def _private_key(path):
@@ -105,9 +116,10 @@ def _private_key(path):
 class _GuardedTransport:
     provider = 'openai'
 
-    def __init__(self, transport, ledger, cues):
+    def __init__(self, transport, ledger, cues, *, concurrency=1, isolate_failures=False):
         self.transport, self.ledger, self.cues = transport, ledger, cues
-        self.lock = threading.Lock()
+        self.lock = threading.BoundedSemaphore(concurrency)
+        self.isolate_failures = isolate_failures
 
     def __call__(self, wire):
         # Reject busy admission immediately: queuing a paid worker behind
@@ -121,8 +133,11 @@ class _GuardedTransport:
                 raw = (self.transport(wire) if context is None else
                        self.transport(wire, deadline=context[0], cancelled=context[1]))
                 settled_response = True
-                result, _, _ = self.cues.completion(raw, provider='openai')
                 data = self.cues.decode(wire['messages'][1]['content'])
+                is_reference = data.get('stage') == 'reference_select'
+                is_clause = data.get('stage') in {'clause_select', 'clause_prune'}
+                is_selection = set(data) == {'query', 'options', 'sources'}
+                result, _, _ = self.cues.completion(raw, provider='openai', output_limit=4096 if is_selection or is_clause or is_reference else 768)
                 if set(data) == {'messages'}:
                     # Validate each complete-coverage chunk against its own
                     # original indices before allowing any raw Add commit.
@@ -137,6 +152,21 @@ class _GuardedTransport:
                             raise ValueError('cue_source_index')
                         seen.add(cue['index'])
                         self.cues.strings(cue['keywords'], self.cues.MAX_KEYWORDS)
+                elif is_reference:
+                    from .reference_selection import validate_response_data
+                    try: validate_response_data(data, result)
+                    except (ValueError, KeyError, TypeError): raise ValueError('cue_shape') from None
+                elif is_clause:
+                    from .clause_selection import validate_response_data
+                    try: validate_response_data(data, result)
+                    except (ValueError, KeyError, TypeError): raise ValueError('cue_shape') from None
+                elif is_selection:
+                    from .evidence_selection import materialize
+                    rows = [{'id': c['id'], 'content': c['content'], 'source_spans': [{
+                        'source_id': c['id'], 'role': c['role'], 'message_time': c['message_time'],
+                        'start': 0, 'end': len(c['content'])}]} for c in data['sources']]
+                    try: materialize(rows, result)
+                    except (ValueError, KeyError, TypeError): raise ValueError('cue_shape') from None
                 else:
                     if not isinstance(result, dict) or set(result) != {'queries'}:
                         raise ValueError('cue_shape')
@@ -150,7 +180,12 @@ class _GuardedTransport:
                 # retain the durable global stop and conservative reservation.
                 known_semantic = (settled_response and type(error) is ValueError
                                   and str(error) in _SEMANTIC_FAILURES)
-                halted = not known_semantic
+                from .api import ApiError
+                isolated_provider = self.isolate_failures and (
+                    (type(error) is ApiError and error.status == 503) or
+                    (type(error) is ValueError and str(error) in {
+                        'cue_request_cancelled', 'cue_request_deadline'}))
+                halted = not (known_semantic or isolated_provider)
                 if halted:
                     self.ledger.halt()
                 code = str(error) if known_semantic else 'provider_or_runtime_failure'
@@ -166,13 +201,18 @@ class _AdmissionService:
     No background worker owns queued work. Its HTTP executor thread must still
     be live, uncancelled and within its deadline before entering the backend.
     """
-    def __init__(self, service, capacity=16, operation_seconds=270):
+    def __init__(self, service, capacity=16, operation_seconds=270, *, concurrency=1):
         if type(capacity) is not int or not 1 <= capacity <= 128:
             raise ValueError('semantic_host_queue_capacity')
+        if type(concurrency) is not int or not 1 <= concurrency <= min(8, capacity):
+            raise ValueError('semantic_host_concurrency')
         self._service = service
+        self._concurrency = concurrency
+        self._users = set()
+        self._cancellations = set()
         self._condition = threading.Condition()
         self._waiting = deque()
-        self._active = False
+        self._active = 0
         self._closing = False
         self._active_cancelled = None
         self._capacity = capacity
@@ -186,24 +226,40 @@ class _AdmissionService:
         deadline = time.monotonic() + self._operation_seconds if deadline is None else deadline
         cancelled = threading.Event() if cancelled is None else cancelled
         ticket = object()
+        user = payload.get('user_id') if isinstance(payload, dict) else None
+        user = user if isinstance(user, str) else '__invalid_payload__'
+        entry = (ticket, user)
+        def eligible():
+            # Earlier work for this tenant must finish first. Other tenants
+            # may pass a blocked tenant to use otherwise idle workers.
+            if self._active >= self._concurrency or user in self._users:
+                return False
+            for pending in self._waiting:
+                pending_user = pending[1]
+                if pending_user not in self._users:
+                    return pending is entry
+            return False
         def expired():
             return self._closing or cancelled.is_set() or time.monotonic() >= deadline
         with self._condition:
-            if expired() or len(self._waiting) + int(self._active) >= self._capacity:
+            if expired() or len(self._waiting) + self._active >= self._capacity:
                 raise ApiError(429, 'semantic queue unavailable')
-            self._waiting.append(ticket)
+            self._waiting.append(entry)
             try:
-                while self._active or self._waiting[0] is not ticket:
+                while not eligible():
                     if expired():
                         raise ApiError(429, 'semantic queue expired')
                     self._condition.wait(min(.05, max(0, deadline - time.monotonic())))
                 if expired():
                     raise ApiError(429, 'semantic queue expired')
-                self._waiting.popleft()
-                self._active = True
+                self._waiting.remove(entry)
+                self._active += 1
+                self._users.add(user)
+                self._cancellations.add(cancelled)
                 self._active_cancelled = cancelled
+                self._condition.notify_all()
             except BaseException:
-                self._waiting.remove(ticket)
+                self._waiting.remove(entry)
                 self._condition.notify_all()
                 raise
         previous = getattr(_REQUEST, 'context', None)
@@ -215,15 +271,17 @@ class _AdmissionService:
         finally:
             _REQUEST.context = previous
             with self._condition:
-                self._active = False
+                self._active -= 1
+                self._users.remove(user)
+                self._cancellations.discard(cancelled)
                 self._active_cancelled = None
                 self._condition.notify_all()
 
     def cancel_pending(self):
         with self._condition:
             self._closing = True
-            if self._active_cancelled is not None:
-                self._active_cancelled.set()
+            for event in self._cancellations:
+                event.set()
             self._condition.notify_all()
 
     def dispatch(self, route, payload, deadline, cancelled):
@@ -251,6 +309,21 @@ def create_server(hosted, semantic):
                                           identity.get('source_state') != 'committed'):
         raise ValueError('semantic_host_fixed_build_required')
     retrieval = hosted_retrieval_config(hosted)
+    reference_selection = retrieval.flags.get('experimental_reference_selection', False)
+    if reference_selection and (retrieval.flags.get('experimental_clause_selection', False)
+                               or retrieval.flags.get('experimental_evidence_selection', False)):
+        raise ValueError('semantic_reference_selection_modes_conflict')
+    if reference_selection and not (retrieval.flags.get('official_evidence_packing', False)
+                                   and retrieval.flags.get('experimental_reference_expansion', False)):
+        raise ValueError('semantic_reference_selection_requires_expansion')
+    if (retrieval.flags.get("experimental_record_headers", False)
+            and not retrieval.flags.get("official_evidence_packing", False)):
+        raise ValueError("semantic_record_headers_require_packing")
+    if retrieval.flags.get('experimental_clause_selection', False) and retrieval.flags.get('experimental_evidence_selection', False):
+        raise ValueError('semantic_selection_modes_conflict')
+    if reference_selection or retrieval.flags.get('experimental_evidence_selection', False) or retrieval.flags.get('experimental_clause_selection', False):
+        if not retrieval.flags.get('official_evidence_packing', False) or semantic.policy.input_bytes_limit != 65536:
+            raise ValueError('semantic_selection_policy_required')
     if retrieval_config_digest(retrieval) != semantic.policy.profile_sha256:
         raise ValueError('semantic_host_profile_drift')
     ledger = ModelBudget(semantic.budget_db_path, semantic.policy, enabled=True)
@@ -258,19 +331,23 @@ def create_server(hosted, semantic):
     transport = cues.OpenAICueTransport(key, reserve=ledger.reserve, settle=ledger.settle,
                                       unknown=ledger.unknown, enabled=True,
                                       network_seconds=120, process_seconds=130,
-                                      observe=_provider_metadata)
+                                      observe=lambda event, raw=None: _provider_metadata(
+                                          event, raw, halted=not semantic.isolate_provider_failures))
     core = MemoryService(retrieval)
     service = None
     try:
         def recovery_ready():
             state = ledger.snapshot()
             return not state['halted'] and state['unresolved'] == 0
-        service = cues.SemanticCueService(core, _GuardedTransport(transport, ledger, cues),
+        service = cues.SemanticCueService(core, _GuardedTransport(transport, ledger, cues,
+                        concurrency=semantic.model_concurrency,
+                        isolate_failures=semantic.isolate_provider_failures),
                     enabled=True, cue_db_path=semantic.cue_db_path, provider='openai',
                     complete_add_coverage=True,
                     recover_unknown_once=semantic.recover_unknown_add_once,
                     recovery_ready=recovery_ready if semantic.recover_unknown_add_once else None)
-        admission = _AdmissionService(service, semantic.queue_capacity, hosted.operation_timeout_seconds)
+        admission = _AdmissionService(service, semantic.queue_capacity, hosted.operation_timeout_seconds,
+                                      concurrency=semantic.model_concurrency)
         server = HostedAMLServer(replace(hosted, retrieval_json='{}'), service=admission,
                                  quiet=True, deadline_dispatch=admission.dispatch,
                                  deadline_shutdown=admission.cancel_pending)
@@ -278,10 +355,12 @@ def create_server(hosted, semantic):
         if service is not None: service.close()
         else: core.close()
         raise
-    server.identity.update(semantic_budget_enforced=True, semantic_cues_add_input_coverage='complete',
+    server.identity.update(semantic_budget_enforced=semantic.policy.budget_microusd is not None,
+        semantic_call_quota_enforced=semantic.policy.max_attempts is not None,
+        semantic_provider_failure_isolation=semantic.isolate_provider_failures, semantic_cues_add_input_coverage='complete',
         semantic_cues_protocol=cues.COMPLETE_PROTOCOL, semantic_cues_model=MODEL, semantic_cues_provider='openai',
         semantic_cues_default_service=False, semantic_cues_gain_verified=False,
-        semantic_http_queue_capacity=semantic.queue_capacity, semantic_model_concurrency=1,
+        semantic_http_queue_capacity=semantic.queue_capacity, semantic_model_concurrency=semantic.model_concurrency,
         semantic_queue_deadline_included=True)
     # Local trusted-operator inspection only; not included in public health.
     server.model_budget = ledger

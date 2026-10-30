@@ -41,6 +41,15 @@ DEFAULT_EPOCH = 1788307200
 # New runtime modules must be explicitly reviewed into this list.
 SOURCE_ALLOWLIST = frozenset(
     {
+        'scripts/benchmark_full_capacity.py',
+        'scripts/prepare_full_capacity_ledger.py',
+        'tests/test_full_capacity.py',
+        'tests/test_full_capacity_migration.py',
+        'tests/test_reference_selection_queue.py',
+        'tests/test_reference_selection_service.py',
+        'tests/test_source_time.py',
+        'tests/test_ranking_source_time.py',
+        'tests/test_reference_expansion_service.py',
         'aml_retriever/aml_model_budget.py',
         'aml_retriever/aml_semantic_host.py',
         'tests/test_aml_model_budget.py',
@@ -84,6 +93,12 @@ SOURCE_ALLOWLIST = frozenset(
         'aml_retriever/reference_evidence_adapter.py',
         'aml_retriever/sentence_scope_adapter.py',
         'aml_retriever/source_calendar.py',
+        'aml_retriever/source_time.py',
+        'aml_retriever/reference_expansion.py',
+        'aml_retriever/evidence_selection.py',
+        'aml_retriever/clause_selection.py',
+        'aml_retriever/reference_selection.py',
+        'aml_retriever/record_evidence.py',
         'aml_retriever/temporal_comparison.py',
         'aml_retriever/user_evidence_adapter.py',
         'aml_retriever/user_evidence_policy.py',

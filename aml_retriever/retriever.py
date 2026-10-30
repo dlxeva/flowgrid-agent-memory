@@ -38,6 +38,7 @@ from . import extraction
 from . import governance as governed
 from . import migrations as schema_migrations
 from .config import RetrieverConfig
+from .source_time import source_message_time
 from .views import (
     affected_window_starts,
     join_content,
@@ -167,12 +168,8 @@ def _now_iso() -> str:
 
 
 def _iso_from_ms(ts_ms) -> str | None:
-    if ts_ms is None:
-        return None
-    try:
-        return datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc).isoformat()
-    except (TypeError, ValueError, OSError, OverflowError):
-        return None
+    stamp = source_message_time(ts_ms)
+    return None if stamp == 'unknown' else stamp
 
 
 def _msg_id(user_id: str, session_id: str | None, seq: int) -> str:
@@ -809,7 +806,11 @@ class RetrieverDB:
         scored = self._score(records, query, tokens, rank_map, relative_window=relative_window)
         ordered = self._fuse_and_order(scored, fts_order)
         if self.flags.get("dedup", True):
-            ordered = self._dedup(ordered, source_aware=self.flags.get("source_aware_dedup", False))
+            ordered = self._dedup(
+                ordered, source_aware=self.flags.get("source_aware_dedup", False),
+                union_coverage=(self.flags.get("packed_union_dedup", False)
+                                and self.flags.get("official_evidence_packing", False)),
+            )
         if self.flags.get("complementary_sources", False):
             ordered = self._complementary_order(ordered)
         final = self._apply_slot_guarantee(ordered, limit)
@@ -860,6 +861,16 @@ class RetrieverDB:
                     rec["source_ids"] = json.loads(rec["source_ids"])
                 except (TypeError, ValueError):
                     rec["source_ids"] = [rec["id"]]
+                # Ranking uses a recorded source timestamp, never the view's
+                # created_at (which may have fallen back to ingestion time).
+                ids = rec["source_ids"]
+                if isinstance(ids, list) and ids and isinstance(ids[0], str):
+                    source = con.execute(
+                        "SELECT ts_ms FROM messages WHERE user_id=? AND id=?",
+                        (user_id, ids[0]),
+                    ).fetchone()
+                    if source is not None:
+                        rec["ts_ms"] = source["ts_ms"]
                 out.append(rec)
         return out
 
@@ -879,8 +890,6 @@ class RetrieverDB:
         for rec in records:
             if rec["view"] == "message":
                 msg_seqs.setdefault((rec.get("session_id"),), set()).add(int(rec.get("seq") or 0))
-
-        now_ts = time.time()
 
         # 相对新近度：把候选集内的时间戳线性归一到 [0, 1]。
         # 绝对年龄在"整批语料都很老"时会退化成常数，无法区分新旧证据。
@@ -953,13 +962,8 @@ class RetrieverDB:
                         relative = 1.0
                     score += recency_weight * relative
                     flags.append("recency_intent" if temporal_intent else "recency")
-                elif self._age_days(rec.get("created_at"), now_ts) is not None:
-                    # 极端兜底：没有可用时间戳时退回绝对年龄的弱信号
-                    age_days = self._age_days(rec.get("created_at"), now_ts)
-                    score += W_RECENCY / (1.0 + math.log1p(max(0.0, age_days)))
-                    flags.append("recency")
 
-            # Only original messages have a single authoritative event time.
+            # Only original messages have a single recorded source time.
             # Aggregate views may straddle the boundary, so boosting them by
             # their first source timestamp would manufacture false precision.
             if relative_window is not None and rec["view"] == "message":
@@ -1003,27 +1007,15 @@ class RetrieverDB:
 
     @staticmethod
     def _epoch_of(rec: dict) -> float | None:
-        """候选记录的事件时间（秒）。优先原始 ts_ms，其次解析 created_at。
+        """Recorded source time in seconds, distinct from event/ingestion time.
 
-        聚合视图的 created_at 取自其首条源消息，因此与原始消息在同一时间轴上，
-        可以直接参与相对新近度归一。
+        Views obtain their first source's ts_ms in _load_records. An absent,
+        malformed or unrepresentable source time supplies no ordering evidence.
         """
         ts_ms = rec.get("ts_ms")
-        if ts_ms is not None:
-            try:
-                return float(ts_ms) / 1000.0
-            except (TypeError, ValueError):
-                pass
-        created_at = rec.get("created_at")
-        if not created_at:
+        if source_message_time(ts_ms) == 'unknown':
             return None
-        try:
-            dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
+        return ts_ms / 1000.0
 
     @staticmethod
     def _age_days(created_at: str | None, now_ts: float) -> float | None:
@@ -1056,10 +1048,16 @@ class RetrieverDB:
             }
             if len(values) < 2:
                 continue
-            newest = max(group, key=lambda r: (r.get("created_at") or "", r["id"]))
             for rec in group:
                 if "possible_conflict" not in rec["flags"]:
                     rec["flags"].append("possible_conflict")
+            epochs = [self._epoch_of(rec) for rec in group]
+            if any(epoch is None for epoch in epochs):
+                continue
+            latest = max(epochs)
+            if epochs.count(latest) != 1:
+                continue
+            newest = group[epochs.index(latest)]
             newest["score"] += W_CONFLICT_LATEST
             if "latest_state" not in newest["flags"]:
                 newest["flags"].append("latest_state")
@@ -1227,10 +1225,11 @@ class RetrieverDB:
         return sorted(records, key=lambda x: (-x["score"], len(x["content"] or ""), x["id"]))
 
     @staticmethod
-    def _dedup(ordered: list[dict], *, source_aware: bool = False) -> list[dict]:
+    def _dedup(ordered: list[dict], *, source_aware: bool = False, union_coverage: bool = False) -> list[dict]:
         seen_hash: set[str] = set()
         kept: list[dict] = []
         covered: list[set] = []
+        covered_union: set[str] = set()
         for rec in ordered:
             digest = hashlib.sha1((rec["content"] or "").encode("utf-8")).hexdigest()
             if source_aware:
@@ -1241,11 +1240,15 @@ class RetrieverDB:
                 continue
             sources = set(rec["source_ids"])
             # 聚合视图若已被某条保留视图完全覆盖，则丢弃（原始消息永不丢弃）
-            if rec["view"] != "message" and any(sources <= c for c in covered):
+            # Packing renders originals; a view covered jointly by retained
+            # views contributes no content and must not consume a result slot.
+            redundant = (bool(sources) and sources <= covered_union) if union_coverage else any(sources <= c for c in covered)
+            if rec["view"] != "message" and redundant:
                 continue
             seen_hash.add(digest)
             if rec["view"] != "message":
                 covered.append(sources)
+                covered_union.update(sources)
             kept.append(rec)
         return kept
 

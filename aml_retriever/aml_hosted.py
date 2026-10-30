@@ -37,6 +37,7 @@ _REASONS = {
     413: "request body too large", 415: "application/json required",
     417: "expectation not supported", 422: "request validation failed",
     429: "capacity limit reached", 500: "internal operation failed",
+    503: "semantic service unavailable",
     504: "operation timed out", 505: "HTTP version not supported",
     431: "request headers too large",
 }

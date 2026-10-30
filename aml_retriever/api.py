@@ -44,6 +44,7 @@ from .extraction import (
     validate_proposals,
 )
 from .config import RetrieverConfig
+from .source_time import source_message_time
 from .context import (
     MAX_CONTEXT_RECORDS,
     ContextCompiler,
@@ -557,6 +558,43 @@ class MemoryService:
         }
 
     def official_search(self, payload: dict) -> dict:
+        if self.config.flags.get("experimental_reference_selection", False):
+            raise ApiError(503, "reference selection requires semantic service")
+        self._validate_record_rendering()
+        result = self._official_search_unpacked(payload)
+        result["data"] = self._finalize_official_sources(
+            payload["user_id"], result["data"], payload["top_k"])
+        result["data"] = self._render_official_records(result["data"])
+        return result
+
+    def _validate_record_rendering(self):
+        if (self.config.flags.get("experimental_record_headers", False)
+                and not self.config.flags.get("official_evidence_packing", False)):
+            raise ApiError(503, "record headers require source packing")
+
+    def _render_official_records(self, items):
+        if not self.config.flags.get("experimental_record_headers", False):
+            return items
+        self._validate_record_rendering()
+        from .record_evidence import render_records
+        try:
+            return render_records(items)
+        except ValueError:
+            raise ApiError(503, "record evidence unavailable") from None
+
+    def _finalize_official_sources(self, user_id, items, top_k):
+        """Apply opt-in evidence transformations only after final fusion."""
+        if not self.config.flags.get("official_evidence_packing", False):
+            return items
+        selected = self._pack_official_sources(user_id, items)
+        if self.config.flags.get("experimental_reference_expansion", False):
+            from .reference_expansion import expand_references
+            selected, _ = expand_references(
+                self, user_id, selected, top_k, max_seed_rows=100)
+        return selected
+
+    def _official_search_unpacked(self, payload: dict) -> dict:
+        """Internal fusion input: never collapse evidence before final ranking."""
         data = validate_search_payload(payload, top_k_max=self.config.top_k_max)
         try:
             result = self.search(
@@ -568,6 +606,73 @@ class MemoryService:
         except ValueError as exc:
             raise ApiError(422, str(exc)) from exc
         return {"data": [self._evidence_to_official(e) for e in result.results]}
+
+    def _pack_official_sources(self, user_id: str, items: list[dict]) -> list[dict]:
+        """Render each selected original once, after ranking and top-k selection.
+
+        Source identity, not equal text, defines a duplicate. This does not add
+        neighbors, infer chronology, summarize or discard conflicts. Message
+        timestamps retain source precision; absent timestamps remain unknown.
+        A missing source fails closed, including after an erasure.
+        """
+        import json
+        seen = set()
+        packed = []
+        with self.db.connection() as con:
+            con.execute("SAVEPOINT official_pack")
+            try:
+                for item in items:
+                    row = con.execute(
+                        "SELECT id,role,content,ts_ms,created_at FROM messages WHERE user_id=? AND id=?",
+                        (user_id, item["id"]),
+                    ).fetchone()
+                    if row is not None:
+                        rows = [row]
+                    else:
+                        view = con.execute(
+                            "SELECT source_ids FROM views WHERE user_id=? AND view_id=?",
+                            (user_id, item["id"]),
+                        ).fetchone()
+                        if view is None:
+                            raise ApiError(409, "source unavailable")
+                        ids = json.loads(view["source_ids"])
+                        if (not isinstance(ids, list) or not ids
+                                or any(not isinstance(mid, str) for mid in ids)
+                                or len(ids) != len(set(ids))):
+                            raise ApiError(409, "source unavailable")
+                        rows = [con.execute(
+                            "SELECT id,role,content,ts_ms,created_at FROM messages WHERE user_id=? AND id=?",
+                            (user_id, mid),
+                        ).fetchone() for mid in ids]
+                        if any(row is None for row in rows):
+                            raise ApiError(409, "source unavailable")
+                    parts = []
+                    emitted_ids = []
+                    source_spans = []
+                    offset = 0
+                    for row in rows:
+                        if row["id"] in seen:
+                            continue
+                        seen.add(row["id"])
+                        emitted_ids.append(row["id"])
+                        stamp = source_message_time(row["ts_ms"])
+                        label = ("[role=" + json.dumps(row["role"], ensure_ascii=False)
+                                 + "; message_time=" + json.dumps(stamp)
+                                 + "; source=" + json.dumps(row["id"]) + "]")
+                        start = offset + len(label) + 1
+                        source_spans.append({"source_id": row["id"], "role": row["role"],
+                                             "message_time": stamp, "start": start,
+                                             "end": start + len(row["content"])})
+                        part = label + "\n" + row["content"]
+                        parts.append(part)
+                        offset += len(part) + 1
+                    if parts:
+                        packed.append({**item, "content": "\n".join(parts),
+                                       "source_message_ids": emitted_ids,
+                                       "source_spans": source_spans})
+            finally:
+                con.execute("RELEASE SAVEPOINT official_pack")
+        return packed
 
     def _official_source_content(self, evidence: Evidence) -> str:
         """Read exact original sources in declared order, never infer a subject.
@@ -592,7 +697,7 @@ class MemoryService:
         parts = []
         for source_id in ids:
             row = sources[source_id]
-            stamp = row["created_at"] if row["ts_ms"] is not None else "unknown"
+            stamp = source_message_time(row["ts_ms"])
             label = ("[role=" + json.dumps(row["role"], ensure_ascii=False)
                      + "; time=" + json.dumps(stamp)
                      + "; source=" + json.dumps(source_id) + "]")

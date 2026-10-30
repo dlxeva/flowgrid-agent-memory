@@ -7,6 +7,7 @@ with a dedicated database and an explicitly injected bounded transport.
 """
 from __future__ import annotations
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -18,6 +19,16 @@ import time
 from pathlib import Path
 from .api import ApiError, validate_add_payload, validate_search_payload
 from .store import _build_match
+from .source_time import source_message_time
+
+def source_text(row):
+    label = {
+        'source': row['id'], 'role': row['role'],
+        'time': source_message_time(row['ts_ms']),
+        'session': row['session_id'], 'conversation_position': row['seq'],
+    }
+    return '[source metadata ' + json.dumps(label, ensure_ascii=False) + ']\n' + row['content']
+
 
 MODEL='gpt-4o-mini-2024-07-18'
 DEEPSEEK_MODEL='deepseek-flash'
@@ -41,11 +52,14 @@ def fail(kind,status=None):
     if status is not None:event['http_status']=status
     sys.stderr.write(json.dumps(event));sys.exit(2)
 try:
-    data=json.loads(sys.stdin.buffer.read(32769))
+    data=json.loads(sys.stdin.buffer.read(131073))
+    input_limit,output_limit=data.get('limits',[16384,768])
+    if (input_limit,output_limit) not in ((16384,768),(65536,4096)):raise ValueError()
+    response_limit=65536 if output_limit==4096 else 16384
     key=data['credential'];request=data['request']
     if not isinstance(key,str) or not key or len(key)>4096 or any(ord(c)<33 or ord(c)>126 for c in key):raise ValueError()
     raw=json.dumps(request,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
-    if len(raw)>16384:raise ValueError()
+    if len(raw)>input_limit:raise ValueError()
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
     provider=data['provider']
     endpoints={'openai':('https://api.openai.com/v1/chat/completions','gpt-4o-mini-2024-07-18'),'deepseek':('https://api.deepseek.com/chat/completions','deepseek-flash')}
@@ -54,11 +68,11 @@ try:
     req=urllib.request.Request(endpoint,data=raw,headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
     if data.get('deadline') is not None and time.monotonic()>=data['deadline']:
         raise TimeoutError()
-    with opener.open(req,timeout=20) as response:body=response.read(16385)
+    with opener.open(req,timeout=20) as response:body=response.read(response_limit+1)
     sys.stdout.buffer.write(body)
-    if len(body)>16384:fail('response_size_limit')
+    if len(body)>response_limit:fail('response_size_limit')
 except urllib.error.HTTPError as error:
-    try:sys.stdout.buffer.write(error.read(16385))
+    try:sys.stdout.buffer.write(error.read(response_limit+1))
     except Exception:pass
     fail('http_error',error.code)
 except TimeoutError:fail('network_timeout')
@@ -105,11 +119,26 @@ class OpenAICueTransport:
         remaining()
         owned=copy.deepcopy(value)
         data=decode(owned['messages'][1]['content'])
-        stage='add' if isinstance(data,dict) and set(data)=={'messages'} else 'search'
-        if owned!=request(stage,data,provider=self.provider):
+        if isinstance(data, dict) and data.get('stage') == 'reference_select':
+            from .reference_selection import canonical_request_data
+            expected = canonical_request_data(data, self.provider)
+            input_limit, output_limit = 65536, 4096
+        elif isinstance(data, dict) and data.get('stage') in {'clause_select', 'clause_prune'}:
+            from .clause_selection import canonical_request_data
+            expected = canonical_request_data(data, self.provider)
+            input_limit, output_limit = 65536, 4096
+        elif isinstance(data, dict) and set(data) == {'query', 'options', 'sources'}:
+            from .evidence_selection import selection_request_data
+            expected = selection_request_data(data, self.provider)
+            input_limit, output_limit = 65536, 4096
+        else:
+            stage='add' if isinstance(data,dict) and set(data)=={'messages'} else 'search'
+            expected = request(stage,data,provider=self.provider)
+            input_limit, output_limit = MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS
+        if owned != expected:
             raise ValueError('cue_wire_drift')
         remaining()
-        token=self.reserve(sha(encode(owned)),MODELS[self.provider],MAX_INPUT_BYTES,MAX_OUTPUT_TOKENS)
+        token=self.reserve(sha(encode(owned)),MODELS[self.provider],input_limit,output_limit)
         phase='worker'
         def observed(event,raw=None):
             nonlocal phase
@@ -122,7 +151,7 @@ class OpenAICueTransport:
             if left is not None:
                 network_seconds=min(self.network_seconds,max(.01,process_seconds-.05))
                 worker=worker.replace('timeout='+str(self.network_seconds), 'timeout='+repr(network_seconds),1)
-            invocation={'credential':self.credential,'request':owned,'provider':self.provider}
+            invocation={'credential':self.credential,'request':owned,'provider':self.provider,'limits':[input_limit,output_limit]}
             if deadline is not None:invocation['deadline']=deadline
             p=subprocess.run([sys.executable,'-I','-B','-c',worker],input=encode(invocation),capture_output=True,timeout=process_seconds)
             if p.returncode!=0:
@@ -138,7 +167,7 @@ class OpenAICueTransport:
                 raise ValueError('cue_provider_failed')
             observed({'kind':'provider_response'},p.stdout[:16385])
             phase='completion_validation'
-            _,digest,usage=completion(p.stdout,provider=self.provider)
+            _,digest,usage=completion(p.stdout,provider=self.provider,output_limit=output_limit)
             phase='budget_settlement'
             self.settle(token,usage,digest)
             remaining()
@@ -229,15 +258,18 @@ def request(stage,data,*,provider='openai'):
     if len(encode(value))>MAX_INPUT_BYTES:raise ValueError('cue_input_limit')
     return value
 
-def completion(raw,*,provider='openai'):
+def completion(raw,*,provider='openai',output_limit=MAX_OUTPUT_TOKENS):
+    if output_limit not in (768,4096):raise ValueError('cue_output_limit')
+    response_limit=65536 if output_limit==4096 else 16384
+    prompt_limit=65536 if output_limit==4096 else 32768
     if provider not in MODELS:raise ValueError('cue_provider')
-    if not isinstance(raw,bytes) or len(raw)>16384:raise ValueError('cue_response_limit')
+    if not isinstance(raw,bytes) or len(raw)>response_limit:raise ValueError('cue_response_limit')
     body=decode(raw);choices=body.get('choices')
     if body.get('model')!=MODELS[provider] or not isinstance(choices,list) or len(choices)!=1:raise ValueError('cue_model')
     c=choices[0];m=c.get('message',{});usage=body.get('usage',{})
     if c.get('finish_reason')!='stop' or m.get('role')!='assistant' or m.get('refusal') is not None or m.get('tool_calls'):
         raise ValueError('cue_incomplete')
-    if any(type(usage.get(k)) is not int or not 1<=usage[k]<=cap for k,cap in [('prompt_tokens',32768),('completion_tokens',MAX_OUTPUT_TOKENS)]):
+    if any(type(usage.get(k)) is not int or not 1<=usage[k]<=cap for k,cap in [('prompt_tokens',prompt_limit),('completion_tokens',output_limit)]):
         raise ValueError('cue_usage')
     if 'total_tokens' in usage and usage['total_tokens']!=usage['prompt_tokens']+usage['completion_tokens']:raise ValueError('cue_usage')
     return decode(m['content']),sha(raw),usage
@@ -308,6 +340,7 @@ class SemanticCueService:
         if complete_add_coverage:self.protocol=COMPLETE_DEEPSEEK_PROTOCOL if provider=='deepseek' else COMPLETE_PROTOCOL
         self.core=core;self.config=core.config;self.db=core.db;self.transport=transport
         self.lock=threading.RLock()
+        self._tenant_locks={}
         if cue_db_path is None:
             if self.db.db_path!=':memory:':raise ValueError('explicit_sidecar_required')
             cue_db_path=':memory:'
@@ -339,7 +372,37 @@ class SemanticCueService:
         if con.execute('SELECT 1 FROM aml_cue_attempts WHERE model IS NULL OR model<>? LIMIT 1',(self.model,)).fetchone():raise ValueError('cue_profile_mismatch')
         if not profile:con.execute('INSERT INTO aml_cue_profile VALUES(1,?,?,?)',(self.provider,self.model,self.protocol))
 
-    def official_add(self,payload):
+    @contextmanager
+    def _tenant_gate(self, user_id):
+        # Count waiters as well as holders; remove unused locks so the table
+        # cannot grow with every user ever observed.
+        with self.lock:
+            entry = self._tenant_locks.setdefault(user_id, [threading.RLock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self.lock:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    del self._tenant_locks[user_id]
+
+    def official_add(self, payload):
+        data = validate_add_payload(payload)
+        with self._tenant_gate(data['user_id']):
+            return self._official_add(data)
+
+    def official_search(self, payload):
+        data = validate_search_payload(payload, top_k_max=self.config.top_k_max)
+        with self._tenant_gate(data['user_id']):
+            return self._official_search(data)
+
+    def delete_user(self, user_id):
+        with self._tenant_gate(user_id):
+            return self._delete_user(user_id)
+
+    def _official_add(self,payload):
         data=validate_add_payload(payload);u,r=data['user_id'],data['request_id']
         with self.lock:
             def claim(con):
@@ -366,30 +429,32 @@ class SemanticCueService:
                 con.execute('INSERT INTO aml_cue_attempts VALUES(?,?,?,?,?,NULL,NULL)',(u,r,sha(encode(data)),'inflight',self.model));return None
             with self.cue_db:old=claim(self.cue_db)
             if old and old['status']=='complete':return self.core.official_add(data)
-            cues=[];digest=None
-            try:
-                if old:
-                    cues=decode(old['cues_json']);digest=old['response_hash']
-                else:
-                    # Plan the entire Add first: a late oversized message must
-                    # not cause a partial set of paid requests or raw writes.
-                    batches=(complete_message_batches(data['messages'],provider=self.provider) if self.complete_add_coverage
-                             else [select_messages(data['messages'],provider=self.provider)])
-                    digests=[]
-                    for selected in batches:
-                        if not selected:continue
+        cues=[];digest=None
+        try:
+            if old:
+                cues=decode(old['cues_json']);digest=old['response_hash']
+            else:
+                # Plan the entire Add first: a late oversized message must
+                # not cause a partial set of paid requests or raw writes.
+                batches=(complete_message_batches(data['messages'],provider=self.provider) if self.complete_add_coverage
+                         else [select_messages(data['messages'],provider=self.provider)])
+                digests=[]
+                for selected in batches:
+                    if not selected:continue
+                    with self.lock:
                         pending=self.cue_db.execute('SELECT status,input_hash FROM aml_cue_attempts WHERE user_id=? AND request_id=?',(u,r)).fetchone()
-                        if not pending or pending['status']!='inflight' or pending['input_hash']!=sha(encode(data)):raise ValueError('cue_attempt_erased')
-                        result,part_digest,_=completion(self.transport(request('add',{'messages':selected},provider=self.provider)),provider=self.provider)
-                        cues.extend(validated_add_cues(result,selected));digests.append(part_digest)
-                    digest=(sha(encode(digests)) if self.complete_add_coverage else digests[0] if digests else None)
-                if not old:
-                    with self.cue_db:
-                        changed=self.cue_db.execute('UPDATE aml_cue_attempts SET status=?,response_hash=?,cues_json=? WHERE user_id=? AND request_id=? AND status=?',('model_ready',digest,encode(cues).decode(),u,r,'inflight')).rowcount
-                        if changed!=1:raise ValueError('cue_attempt_erased')
-            except Exception:
-                with self.cue_db:self.cue_db.execute('UPDATE aml_cue_attempts SET status=? WHERE user_id=? AND request_id=?',('unknown',u,r))
-                raise ApiError(503,'semantic add failed') from None
+                    if not pending or pending['status']!='inflight' or pending['input_hash']!=sha(encode(data)):raise ValueError('cue_attempt_erased')
+                    result,part_digest,_=completion(self.transport(request('add',{'messages':selected},provider=self.provider)),provider=self.provider)
+                    cues.extend(validated_add_cues(result,selected));digests.append(part_digest)
+                digest=(sha(encode(digests)) if self.complete_add_coverage else digests[0] if digests else None)
+            if not old:
+                with self.lock, self.cue_db:
+                    changed=self.cue_db.execute('UPDATE aml_cue_attempts SET status=?,response_hash=?,cues_json=? WHERE user_id=? AND request_id=? AND status=?',('model_ready',digest,encode(cues).decode(),u,r,'inflight')).rowcount
+                    if changed!=1:raise ValueError('cue_attempt_erased')
+        except Exception:
+            with self.lock, self.cue_db:self.cue_db.execute('UPDATE aml_cue_attempts SET status=? WHERE user_id=? AND request_id=?',('unknown',u,r))
+            raise ApiError(503,'semantic add failed') from None
+        with self.lock:
             try:
                 with self.cue_db:
                     self.cue_db.execute('BEGIN IMMEDIATE')
@@ -412,19 +477,32 @@ class SemanticCueService:
                 raise ApiError(503,'semantic add failed') from None
             return {'success':True,'request_id':r,'user_id':u,'session_id':data['session_id']}
 
-    def official_search(self,payload):
+    def _official_search(self,payload):
         data=validate_search_payload(payload,top_k_max=self.config.top_k_max)
+        self.core._validate_record_rendering()
+        clause_selection = self.config.flags.get('experimental_clause_selection', False)
+        literal_selection = self.config.flags.get('experimental_evidence_selection', False)
+        reference_selection = self.config.flags.get('experimental_reference_selection', False)
+        if reference_selection and (clause_selection or literal_selection):
+            raise ApiError(503, 'reference selection cannot combine with other selection modes')
+        if reference_selection and not (self.config.flags.get('official_evidence_packing', False)
+                and self.config.flags.get('experimental_reference_expansion', False)):
+            raise ApiError(503, 'reference selection requires packing and reference expansion')
+        if clause_selection and literal_selection:
+            raise ApiError(503, 'selection modes are mutually exclusive')
+        if (clause_selection or literal_selection) and not self.config.flags.get('official_evidence_packing', False):
+            raise ApiError(503, 'evidence selection requires source packing')
         try:
             result,_,_=completion(self.transport(request('search',{'query':data['query'],'options':data['options']},provider=self.provider)),provider=self.provider)
             if not isinstance(result,dict) or set(result)!={'queries'}:raise ValueError('cue_shape')
             expansions=strings(result['queries'],MAX_QUERIES)
         except Exception:raise ApiError(503,'semantic search failed') from None
-        baseline=self.core.official_search(data)['data'];items={};scores={}
+        baseline=self.core._official_search_unpacked(data)['data'];items={};scores={}
         for rank,item in enumerate(baseline):
             items[item['id']]=copy.deepcopy(item);scores[item['id']]=1/(60+rank+1)
         for query in dict.fromkeys([data['query'],*expansions]):
             if query!=data['query']:
-                for rank,item in enumerate(self.core.official_search({**data,'query':query})['data']):
+                for rank,item in enumerate(self.core._official_search_unpacked({**data,'query':query})['data']):
                     items.setdefault(item['id'],copy.deepcopy(item));scores[item['id']]=scores.get(item['id'],0)+.25/(60+rank+1)
             match=_build_match(query)
             if not match:continue
@@ -433,21 +511,62 @@ class SemanticCueService:
             rows=[]
             with self.db.connection() as con:
                 for m in matches:
-                    source=con.execute('SELECT id,content,created_at FROM messages WHERE user_id=? AND id=?',(data['user_id'],m['message_id'])).fetchone()
+                    source=con.execute('SELECT id,content,role,ts_ms,created_at,session_id,seq FROM messages WHERE user_id=? AND id=?',(data['user_id'],m['message_id'])).fetchone()
                     if source:rows.append({**dict(source),'source_hash':m['source_hash']})
             for rank,row in enumerate(rows):
                 if sha(row['content'].encode())!=row['source_hash']:continue
-                items.setdefault(row['id'],{'id':row['id'],'content':row['content'],'created_at':row['created_at']})
+                content = source_text(row) if self.config.flags.get('official_source_labels', False) else row['content']
+                items.setdefault(row['id'],{'id':row['id'],'content':content,'created_at':row['created_at']})
                 scores[row['id']]=scores.get(row['id'],0)+.25/(60+rank+1)
         order=sorted(items,key=lambda k:(-scores[k],k))[:data['top_k']]
-        return {'data':[{**items[k],'score':scores[k]} for k in order]}
+        selected = [{**items[k],'score':scores[k]} for k in order]
+        if reference_selection:
+            from .reference_expansion import expand_references
+            from .reference_selection import prepare, materialize
+            protected = self.core._pack_official_sources(data['user_id'], selected)
+            expanded, _ = expand_references(self.core, data['user_id'], protected,
+                                            data['top_k'], max_seed_rows=100)
+            try:
+                wire = prepare(data['query'], data['options'], protected, expanded, self.provider)
+                if wire is None:
+                    selected = protected
+                else:
+                    result, _, _ = completion(self.transport(wire), provider=self.provider, output_limit=4096)
+                    selected = materialize(protected, expanded, result)
+            except Exception:
+                raise ApiError(503, 'reference selection failed') from None
+        else:
+            selected = self.core._finalize_official_sources(data['user_id'], selected, data['top_k'])
+        if clause_selection and selected:
+            from .clause_selection import prepare, prune_request, materialize as materialize_clauses
+            try:
+                wire = prepare(data['query'], data['options'], selected, self.provider)
+                selection, _, _ = completion(self.transport(wire), provider=self.provider, output_limit=4096)
+                prune_wire = prune_request(data['query'], data['options'], selected, selection, self.provider)
+                pruning, _, _ = completion(self.transport(prune_wire), provider=self.provider, output_limit=4096)
+                selected = materialize_clauses(selected, selection, pruning)
+            except Exception:
+                raise ApiError(503, 'clause selection failed') from None
+        if literal_selection and selected:
+            from .evidence_selection import selection_request, materialize
+            try:
+                wire = selection_request(data['query'], data['options'], selected, self.provider)
+                result, _, _ = completion(self.transport(wire), provider=self.provider, output_limit=4096)
+                selected = materialize(selected, result)
+            except Exception:
+                raise ApiError(503, 'evidence selection failed') from None
+        return {'data':self.core._render_official_records(selected)}
 
-    def delete_user(self,user_id):
+    def _delete_user(self,user_id):
         with self.lock:
             # Erase derivatives first; a crash can only leave raw evidence to
             # retry, not an orphan model-derived profile after source deletion.
             with self.cue_db:
-                for table in ['aml_cue_fts','aml_cue_index','aml_cue_attempts']:self.cue_db.execute('DELETE FROM '+table+' WHERE user_id=?',(user_id,))
+                tables = ['aml_cue_fts','aml_cue_index','aml_cue_attempts']
+                if self.cue_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='aml_cue_recovery'").fetchone():
+                    tables.append('aml_cue_recovery')
+                for table in tables:
+                    self.cue_db.execute('DELETE FROM '+table+' WHERE user_id=?',(user_id,))
             result=self.db.delete_user(user_id)
             return result
 
