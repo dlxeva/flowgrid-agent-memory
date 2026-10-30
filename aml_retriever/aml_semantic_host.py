@@ -81,7 +81,9 @@ class SemanticHostConfig:
                 'complete_add_coverage': True, 'network_timeout_seconds':120,
                 'process_timeout_seconds':130, 'network_called': False,
                 'credentials_read': False, 'queue_capacity': self.queue_capacity,
-                'model_concurrency': 1, 'queue_deadline_included': True}
+                'model_concurrency': 1, 'queue_deadline_included': True,
+                'fee_cap_enabled': self.policy.budget_microusd is not None,
+                'call_cap_enabled': self.policy.max_attempts is not None}
 
 
 def _private_key(path):
@@ -278,7 +280,9 @@ def create_server(hosted, semantic):
         if service is not None: service.close()
         else: core.close()
         raise
-    server.identity.update(semantic_budget_enforced=True, semantic_cues_add_input_coverage='complete',
+    server.identity.update(semantic_budget_enforced=semantic.policy.budget_microusd is not None,
+        semantic_call_quota_enforced=semantic.policy.max_attempts is not None,
+        semantic_cues_add_input_coverage='complete',
         semantic_cues_protocol=cues.COMPLETE_PROTOCOL, semantic_cues_model=MODEL, semantic_cues_provider='openai',
         semantic_cues_default_service=False, semantic_cues_gain_verified=False,
         semantic_http_queue_capacity=semantic.queue_capacity, semantic_model_concurrency=1,

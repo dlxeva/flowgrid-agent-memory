@@ -41,6 +41,7 @@ DEFAULT_EPOCH = 1788307200
 # New runtime modules must be explicitly reviewed into this list.
 SOURCE_ALLOWLIST = frozenset(
     {
+        'tests/test_baseline_uncapped.py',
         'aml_retriever/aml_model_budget.py',
         'aml_retriever/aml_semantic_host.py',
         'tests/test_aml_model_budget.py',

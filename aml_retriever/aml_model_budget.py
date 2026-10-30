@@ -1,4 +1,4 @@
-"""Private, finite OpenAI cue budget. No credential discovery or network I/O.
+"""Private OpenAI cue accounting with optional fee/call ceilings. No credential discovery or network I/O.
 
 Amounts are conservative uncached-price estimates in millionths of USD, not
 provider invoices. Outstanding calls retain their entire hold after a crash.
@@ -27,8 +27,8 @@ class BudgetPolicy:
     scope: str
     implementation_sha256: str
     profile_sha256: str
-    budget_microusd: int
-    max_attempts: int
+    budget_microusd: int | None
+    max_attempts: int | None
     input_token_limit: int = 32768
     output_token_limit: int = 768
     input_bytes_limit: int = 16384
@@ -40,8 +40,11 @@ class BudgetPolicy:
         if not all(isinstance(v, str) and _SHA.fullmatch(v) for v in
                    (self.implementation_sha256, self.profile_sha256)):
             raise ValueError('budget_identity')
-        for field in ('budget_microusd', 'max_attempts', 'input_token_limit',
-                      'output_token_limit', 'input_bytes_limit'):
+        for field in ('budget_microusd', 'max_attempts'):
+            value = getattr(self, field)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError('budget_positive_integer')
+        for field in ('input_token_limit', 'output_token_limit', 'input_bytes_limit'):
             if type(getattr(self, field)) is not int or getattr(self, field) <= 0:
                 raise ValueError('budget_positive_integer')
         if (self.model != MODEL or self.input_token_limit != 32768 or
@@ -130,7 +133,8 @@ class ModelBudget:
             # reservations even in another process. No automatic retry/recovery.
             if con.execute("SELECT 1 FROM calls WHERE status!='settled' LIMIT 1").fetchone():
                 raise BudgetStopped('budget_unresolved')
-            if count >= p.max_attempts or amount + p.hold > p.budget_microusd:
+            if ((p.max_attempts is not None and count >= p.max_attempts) or
+                    (p.budget_microusd is not None and amount + p.hold > p.budget_microusd)):
                 raise BudgetStopped('budget_limit')
             token = uuid.uuid4().hex
             con.execute('INSERT INTO calls(token,request_sha,status,amount) VALUES (?,?,?,?)',
