@@ -294,10 +294,14 @@ class SemanticCueService:
     if raw ingestion or sidecar finalization is interrupted. Cross-database
     commits are not power-loss atomic; Add succeeds only after finalization.
     """
-    def __init__(self,core,transport,*,enabled=False,cue_db_path=None,provider='openai',complete_add_coverage=False):
+    def __init__(self,core,transport,*,enabled=False,cue_db_path=None,provider='openai',complete_add_coverage=False,recover_unknown_once=False,recovery_ready=None):
         if enabled is not True or not callable(transport):raise ValueError('semantic_cues_disabled')
         if provider not in MODELS or getattr(transport,'provider',provider)!=provider:raise ValueError('cue_provider_mismatch')
         if type(complete_add_coverage) is not bool:raise ValueError('explicit_coverage_boolean_required')
+        if type(recover_unknown_once) is not bool or (recover_unknown_once and not callable(recovery_ready)):
+            raise ValueError('explicit_recovery_gate_required')
+        self.recover_unknown_once=recover_unknown_once
+        self.recovery_ready=recovery_ready
         self.complete_add_coverage=complete_add_coverage
         self.provider=provider;self.model=MODELS[provider]
         self.protocol=DEEPSEEK_PROTOCOL if provider=='deepseek' else PROTOCOL
@@ -325,6 +329,8 @@ class SemanticCueService:
             with self.db.connection() as source:
                 if source.execute('SELECT 1 FROM messages LIMIT 1').fetchone():raise ValueError('fresh_dedicated_database_required')
         con.execute('CREATE TABLE IF NOT EXISTS aml_cue_attempts(user_id TEXT,request_id TEXT,input_hash TEXT,status TEXT,model TEXT,response_hash TEXT,cues_json TEXT,PRIMARY KEY(user_id,request_id))')
+        if self.recover_unknown_once:
+            con.execute('CREATE TABLE IF NOT EXISTS aml_cue_recovery(user_id TEXT,request_id TEXT,input_hash TEXT,previous_state TEXT,PRIMARY KEY(user_id,request_id))')
         con.execute('CREATE TABLE IF NOT EXISTS aml_cue_index(user_id TEXT,message_id TEXT,source_hash TEXT,cue_text TEXT,PRIMARY KEY(user_id,message_id))')
         con.execute('CREATE VIRTUAL TABLE IF NOT EXISTS aml_cue_fts USING fts5(cue_text,user_id UNINDEXED,message_id UNINDEXED)')
         con.execute('CREATE TABLE IF NOT EXISTS aml_cue_profile(singleton INTEGER PRIMARY KEY CHECK(singleton=1),provider TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL)')
@@ -340,6 +346,19 @@ class SemanticCueService:
                 old=con.execute('SELECT * FROM aml_cue_attempts WHERE user_id=? AND request_id=?',(u,r)).fetchone()
                 if old:
                     if old['status']=='complete':return old
+                    if (old['status']=='unknown' and self.recover_unknown_once
+                            and old['input_hash']==sha(encode(data))
+                            and not con.execute('SELECT 1 FROM aml_cue_recovery WHERE user_id=? AND request_id=?',(u,r)).fetchone()
+                            and self.recovery_ready()):
+                        # Operator-approved, one replay of this exact Add only.
+                        # Preserve the previous state atomically; a crash after
+                        # this transition cannot silently buy a second replay.
+                        with self.db.connection() as source:
+                            if source.execute('SELECT 1 FROM requests WHERE user_id=? AND request_id=?',(u,r)).fetchone():
+                                raise ApiError(503,'semantic source ownership mismatch')
+                        con.execute('INSERT INTO aml_cue_recovery VALUES(?,?,?,?)',(u,r,old['input_hash'],encode(dict(old)).decode()))
+                        con.execute("UPDATE aml_cue_attempts SET status='inflight',response_hash=NULL,cues_json=NULL WHERE user_id=? AND request_id=?",(u,r))
+                        return None
                     if old['status']!='model_ready' or old['input_hash']!=sha(encode(data)):raise ApiError(503,'semantic attempt unresolved')
                     return old
                 with self.db.connection() as source:

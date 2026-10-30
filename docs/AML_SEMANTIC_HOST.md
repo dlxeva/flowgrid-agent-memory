@@ -97,5 +97,54 @@ cannot establish real provider latency, retrieval gains or official Smoke/Full
 results. A separately built and installed candidate must pass release checks
 before any scoped publication or deployment.
 
-中文说明：这是可选模型服务入口。预算和调用次数会持久保存，异常即停；记忆治理边界不变。
+中文说明：这是可选模型服务入口。预算和调用次数会持久保存，结果未知的模型故障仍全局停止；已结算的已知格式异常隔离于单次请求。
 配置检查不读取真实密钥或调用模型，真实启动另需固定版本和明确部署、费用范围。
+
+
+## Request-scoped semantic failure and explicit Add recovery
+
+This candidate is based on commit 9b54871802bc197f1510733d110d3c297d00d5ea.
+
+A settled model response with invalid cue fields previously halted the whole
+service. Known cue-validation failures now fail only their own request. They
+still return an error, never commit invalid cues or partial raw Add data, and
+never silently fall back to a different retrieval method. Provider uncertainty,
+unsettled budget reservations, and unexpected failures retain the global stop.
+
+Private stderr diagnostics contain only UTC, fixed phase/error codes, and the
+global-stop boolean. Keys, response bodies, request payloads, identifiers, and
+exception messages are excluded.
+
+`semantic.recover_unknown_add_once` defaults to false. When explicitly enabled,
+an exact replay of an Add marked `unknown` may be attempted once, only when the
+active budget has no unresolved call and is not halted. A different input with
+the same request ID is rejected. The original attempt row is archived in
+`aml_cue_recovery` before changing its state; the one-recovery marker survives
+restarts. Another failure cannot purchase another recovery. Completed requests
+continue to use the existing idempotent path without another model call.
+
+This is a continuation mechanism, not a repair of already invalid output and
+not proof that a historical failure was a cue-format error. Recovery may fail.
+It makes no automatic network request: the official caller must replay the
+matching request. It never marks an unknown Add complete without processing it.
+
+Operator prerequisites before enabling recovery on an existing database:
+
+- Confirm the official job is quiescent. Back up the source, cue, budget, and
+  service configuration with SQLite-consistent snapshots while stopped.
+- Audit every historical provider budget, preserving all settled charges and
+  holds. Unknown financial outcomes must not be bypassed through a new ledger.
+- Bind a new finite budget to the actual new fixed runtime. Deduct every prior
+  charge or hold from the approved cumulative cap; never clear an old halt.
+- Preserve successful Add rows, raw data, request IDs, and isolation state.
+- Publish/disclose the changed runtime and obtain the appropriate AML version
+  binding before evaluating it. Do not silently change a registered version.
+- Verify local/auth/public health, model-free malformed JSON handling, and
+  ledger accounting before any scoring run. Do not launch Full on the basis
+  of local synthetic tests.
+
+Validation: 105 tests passed across semantic host, budget, semantic cues, hosted
+HTTP, and hosted retrieval profile tests. Includes restart/idempotence, exact
+input matching, successful one-time recovery, repeated failure stopping,
+unknown paid outcomes blocking recovery, and metadata redaction. Provider
+subprocesses were mocked; this is not a paid deployment or official Smoke pass.

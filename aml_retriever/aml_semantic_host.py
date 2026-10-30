@@ -7,10 +7,12 @@ message to the existing complete-coverage adapter. No provider fallback.
 """
 import argparse
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import stat
+import sys
 import threading
 import time
 from collections import deque
@@ -18,6 +20,31 @@ from collections import deque
 from .aml_model_budget import BudgetPolicy, ModelBudget, MODEL
 
 _REQUEST = threading.local()
+
+_SEMANTIC_FAILURES = frozenset({'cue_shape', 'cue_source_index', 'cue_bounds',
+                               'cue_string', 'cue_duplicates'})
+
+
+def _failure_metadata(phase, code, halted):
+    """Fixed metadata only: never log an exception message or model payload."""
+    try:
+        print('[aml-semantic-failure] ' + json.dumps({
+            'utc': datetime.now(timezone.utc).isoformat(),
+            'phase': phase, 'code': code, 'scope_halted': halted,
+        }, sort_keys=True), file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
+def _provider_metadata(event, raw=None):
+    # Transport also passes raw response bytes; deliberately never inspect them.
+    kind = event.get('kind') if isinstance(event, dict) else None
+    allowed = {'http_error', 'network_timeout', 'network_error',
+               'response_size_limit', 'worker_error', 'process_timeout',
+               'completion_validation_error',
+               'budget_settlement_error'}
+    if kind in allowed:
+        _failure_metadata('provider', kind, True)
 
 
 @dataclass(frozen=True)
@@ -28,10 +55,13 @@ class SemanticHostConfig:
     policy: BudgetPolicy
     enabled: bool = False
     queue_capacity: int = 16
+    recover_unknown_add_once: bool = False
 
     def validate(self, hosted):
         if self.enabled is not True or not isinstance(self.policy, BudgetPolicy):
             raise ValueError('semantic_host_disabled')
+        if type(self.recover_unknown_add_once) is not bool:
+            raise ValueError('explicit_recovery_boolean_required')
         paths = [self.model_key_file, self.cue_db_path, self.budget_db_path, hosted.db_path]
         for value in paths:
             p = Path(value)
@@ -85,10 +115,12 @@ class _GuardedTransport:
         if not self.lock.acquire(blocking=False):
             raise ValueError('semantic_host_busy')
         try:
+            settled_response = False
             try:
                 context = getattr(_REQUEST, 'context', None)
                 raw = (self.transport(wire) if context is None else
                        self.transport(wire, deadline=context[0], cancelled=context[1]))
+                settled_response = True
                 result, _, _ = self.cues.completion(raw, provider='openai')
                 data = self.cues.decode(wire['messages'][1]['content'])
                 if set(data) == {'messages'}:
@@ -110,8 +142,19 @@ class _GuardedTransport:
                         raise ValueError('cue_shape')
                     self.cues.strings(result['queries'], self.cues.MAX_QUERIES)
                 return raw
-            except Exception:
-                self.ledger.halt()
+            except Exception as error:
+                # A paid, settled response with invalid cue fields belongs to
+                # this request. It still fails and is never silently accepted,
+                # retried, or replaced by a baseline answer. Other requests may
+                # proceed. Unknown provider outcomes and unexpected failures
+                # retain the durable global stop and conservative reservation.
+                known_semantic = (settled_response and type(error) is ValueError
+                                  and str(error) in _SEMANTIC_FAILURES)
+                halted = not known_semantic
+                if halted:
+                    self.ledger.halt()
+                code = str(error) if known_semantic else 'provider_or_runtime_failure'
+                _failure_metadata('cue_validation' if known_semantic else 'transport_or_runtime', code, halted)
                 raise
         finally:
             self.lock.release()
@@ -214,13 +257,19 @@ def create_server(hosted, semantic):
     key = _private_key(semantic.model_key_file)
     transport = cues.OpenAICueTransport(key, reserve=ledger.reserve, settle=ledger.settle,
                                       unknown=ledger.unknown, enabled=True,
-                                      network_seconds=120, process_seconds=130)
+                                      network_seconds=120, process_seconds=130,
+                                      observe=_provider_metadata)
     core = MemoryService(retrieval)
     service = None
     try:
+        def recovery_ready():
+            state = ledger.snapshot()
+            return not state['halted'] and state['unresolved'] == 0
         service = cues.SemanticCueService(core, _GuardedTransport(transport, ledger, cues),
                     enabled=True, cue_db_path=semantic.cue_db_path, provider='openai',
-                    complete_add_coverage=True)
+                    complete_add_coverage=True,
+                    recover_unknown_once=semantic.recover_unknown_add_once,
+                    recovery_ready=recovery_ready if semantic.recover_unknown_add_once else None)
         admission = _AdmissionService(service, semantic.queue_capacity, hosted.operation_timeout_seconds)
         server = HostedAMLServer(replace(hosted, retrieval_json='{}'), service=admission,
                                  quiet=True, deadline_dispatch=admission.dispatch,

@@ -3,6 +3,8 @@
 All provider subprocesses are mocked. Uses synthetic local loopback HTTP only.
 """
 import copy
+import contextlib
+import io
 from collections import deque
 from dataclasses import replace
 import json
@@ -138,18 +140,78 @@ class HostTests(unittest.TestCase):
             self.assertEqual(con.execute('SELECT count(*) FROM messages').fetchone()[0],0)
         self.assertEqual(self.server.model_budget.snapshot()['unresolved'],1)
 
-    def test_semantic_failure_halts_but_known_usage_stays_settled(self):
+    def test_semantic_failure_isolated_and_never_retried(self):
         self.invalid=True; self.start()
         self.assertGreaterEqual(self.http('/add',self.add)[0],500)
-        self.assertGreaterEqual(self.http('/search',{'user_id':'u','query':'diet','top_k':100})[0],500)
+        with self.server.service.db.connection() as con:
+            self.assertEqual(con.execute('SELECT count(*) FROM messages').fetchone()[0],0)
+        self.stop(); self.start()
+        self.invalid=False
+        self.assertEqual(self.http('/search',{'user_id':'u','query':'diet','top_k':100})[0],200)
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
         state=self.server.model_budget.snapshot()
-        self.assertTrue(state['halted']); self.assertEqual(state['unresolved'],0)
-        self.assertEqual(state['charged_or_held_microusd'],17); self.assertEqual(self.calls,1)
+        self.assertFalse(state['halted']); self.assertEqual(state['unresolved'],0)
+        self.assertEqual(state['charged_or_held_microusd'],34); self.assertEqual(self.calls,2)
 
     def test_runtime_and_profile_drift_rejected_before_key_read(self):
         for policy in (replace(self.policy, implementation_sha256='b'*64), replace(self.policy, profile_sha256='c'*64)):
             with patch.object(host,'_private_key',side_effect=AssertionError('must not read')):
                 with self.assertRaises(ValueError): host.create_server(self.config,replace(self.semantic,policy=policy))
+
+    def test_failure_metadata_never_contains_exception_or_raw_response(self):
+        output=io.StringIO()
+        ledger=SimpleNamespace(halt=lambda:None)
+        def fail(wire):
+            raise ValueError('PRIVATE_KEY_AND_EVALUATION_CONTENT')
+        guard=host._GuardedTransport(fail,ledger,cues)
+        with contextlib.redirect_stderr(output):
+            with self.assertRaises(ValueError): guard({})
+            host._provider_metadata({'kind':'network_error'},b'PRIVATE_RAW_RESPONSE')
+            host._provider_metadata({'kind':'PRIVATE_EVENT'},b'PRIVATE_RAW_RESPONSE')
+        logged=output.getvalue()
+        self.assertNotIn('PRIVATE',logged)
+        self.assertIn('provider_or_runtime_failure',logged)
+        self.assertIn('network_error',logged)
+        self.assertEqual(len(logged.splitlines()),2)
+
+    def test_opt_in_exact_failed_add_recovery_preserves_audit_and_success(self):
+        self.semantic=replace(self.semantic,recover_unknown_add_once=True)
+        self.invalid=True; self.start()
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
+        changed=copy.deepcopy(self.add); changed['messages'][0]['content']='different input'
+        self.invalid=False
+        self.assertGreaterEqual(self.http('/add',changed)[0],500)
+        self.assertEqual(self.calls,1)
+        self.assertEqual(self.http('/add',self.add)[0],200)
+        self.assertEqual(self.http('/add',self.add)[0],200)
+        self.assertEqual(self.calls,2)
+        row=self.server.service.cue_db.execute('SELECT previous_state FROM aml_cue_recovery').fetchone()
+        self.assertEqual(json.loads(row[0])['status'],'unknown')
+        self.stop(); self.start()
+        self.assertEqual(self.http('/add',self.add)[0],200)
+        self.assertEqual(self.calls,2)
+
+    def test_recovery_second_failure_never_retries_after_restart(self):
+        self.semantic=replace(self.semantic,recover_unknown_add_once=True)
+        self.invalid=True; self.start()
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
+        self.assertEqual(self.calls,2)
+        self.stop(); self.start()
+        self.invalid=False
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
+        self.assertEqual(self.calls,2)
+        self.assertEqual(self.server.service.cue_db.execute('SELECT count(*) FROM aml_cue_recovery').fetchone()[0],1)
+
+    def test_unknown_paid_outcome_cannot_be_recovered(self):
+        self.semantic=replace(self.semantic,recover_unknown_add_once=True)
+        self.timeout=True; self.start()
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
+        self.timeout=False
+        self.assertGreaterEqual(self.http('/add',self.add)[0],500)
+        self.assertEqual(self.calls,1)
+        self.assertTrue(self.server.model_budget.snapshot()['halted'])
+        self.assertEqual(self.server.service.cue_db.execute('SELECT count(*) FROM aml_cue_recovery').fetchone()[0],0)
 
     def test_disabled_and_invalid_deadline_do_not_read_credentials(self):
         with self.assertRaises(ValueError): replace(self.semantic,enabled=False).validate(self.config)
@@ -364,7 +426,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.calls,0)
 
     def test_provider_failure_halts_overlapping_paid_calls(self):
-        self.invalid=True; self.start()
+        self.timeout=True; self.start()
         payloads=[{**copy.deepcopy(self.add),'user_id':'user-'+str(i),'request_id':'request-'+str(i)} for i in range(16)]
         results=self.concurrent_http(payloads)
         self.assertTrue(all(isinstance(r,tuple) and r[0]>=500 for r in results),results)
